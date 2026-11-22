@@ -148,6 +148,7 @@ def main() -> int:
     base_entries = [
         {
             "ubuntu": ubuntu,
+            "tag": f"ubuntu-{ubuntu}",
             "context": bases[ubuntu],
             "image": f"{registry}/{namespace}/base:ubuntu-{ubuntu}",
         }

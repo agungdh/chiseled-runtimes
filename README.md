@@ -53,6 +53,49 @@ docker run --rm -p 8080:8080 \
   java -jar /app/app.jar
 ```
 
+## Tag dan versioning
+
+Setiap image punya dua jenis tag:
+
+**1. Channel tag (bergerak / mutable)** — yang sebaiknya dipakai di
+`FROM`/compose. Tag ini ikut berubah saat ada patch Java atau update base:
+
+| Tag | Isi |
+|---|---|
+| `java:25-ubuntu26.04` | Java 25 terbaru di Ubuntu 26.04 (target spesifik) |
+| `java:25` | Java 25 terbaru (lintas base, saat ini Ubuntu 26.04) |
+| `java:latest` | target yang terdaftar di `LATEST_TARGETS` (saat ini Java 25) |
+| `base:ubuntu-26.04` | base Ubuntu 26.04 terbaru |
+
+**2. Build tag (untuk audit/rollback)** — menunjuk satu build tertentu:
+
+```
+java:25-ubuntu26.04-<sha git penuh>-<YYYYMMDDHHMMSS>
+base:ubuntu-26.04-<sha git penuh>-<YYYYMMDDHHMMSS>
+```
+
+SHA-nya sengaja penuh (40 karakter) supaya tidak ambigu; build stamp membuat
+tag tetap unik walau commit yang sama di-rebuild (misalnya base Ubuntu update
+atau workflow dijalankan ulang).
+
+Karena tag apa pun tetap bisa ditimpa (GHCR tidak memaksa immutability),
+reproduktibilitas penuh hanya didapat dari **digest**. Setelah push, CI
+mencetak digest tiap tag di job summary:
+
+```
+ghcr.io/agungdh/chiseled-runtimes/java@sha256:...
+```
+
+Image juga diberi label OCI `org.opencontainers.image.revision` (SHA penuh)
+dan `org.opencontainers.image.created`.
+
+Praktisnya:
+
+- Dev/staging: pakai channel tag (`java:25`) supaya selalu dapat patch.
+- Produksi yang butuh reproducibility: pin digest, lalu update lewat
+  Renovate/Dependabot dengan format `java:25-ubuntu26.04@sha256:...`.
+- Build lama: pakai build tag untuk rollback/audit.
+
 ## Build lokal
 
 Butuh Docker (BuildKit). Tanpa argumen, script membangun semua base lalu semua
@@ -61,11 +104,14 @@ runtime, menjalankan smoke test, dan (opsional) push:
 ```bash
 ./scripts/build-local.sh
 
-# build + push ke registry
+# build + push ke registry (channel tag + build tag + digest)
 PUSH=true ./scripts/build-local.sh
 
 # override registry/owner/platform
 REGISTRY=ghcr.io OWNER=agungdh PLATFORM=linux/amd64 ./scripts/build-local.sh
+
+# override git revision yang dicatat di label/tag
+REVISION="$(git rev-parse HEAD)" PUSH=true ./scripts/build-local.sh
 ```
 
 Bisa juga build target tertentu saja. Dependency base akan dibangun otomatis:
@@ -106,6 +152,7 @@ docker build \
 ├── scripts/
 │   ├── build-local.sh
 │   ├── ci-detect-targets.py          # deteksi target yang berubah di CI
+│   ├── push-image.sh                 # push banyak tag + laporkan digest
 │   └── smoke/
 │       └── java.sh                   # smoke test per runtime
 └── README.md
@@ -137,6 +184,10 @@ pada workflow.
 
 Kalau base belum ada di registry (PR, build pertama, atau package hilang), CI
 membangun base tersebut secara lokal sebelum membangun runtime-nya.
+
+Setiap image yang di-push juga mendapat build tag
+(`<tag>-<sha penuh>-<YYYYMMDDHHMMSS>`) dan digest-nya dicetak di job summary.
+Detailnya ada di [Tag dan versioning](#tag-dan-versioning).
 
 ## Update versi
 
