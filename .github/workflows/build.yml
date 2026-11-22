@@ -3,18 +3,12 @@ name: build
 on:
   push:
     branches: [main]
-    paths:
-      - "base/**"
-      - "java/**"
-      - "scripts/**"
-      - ".github/workflows/build.yml"
+    paths-ignore:
+      - "**.md"
   pull_request:
     branches: [main]
-    paths:
-      - "base/**"
-      - "java/**"
-      - "scripts/**"
-      - ".github/workflows/build.yml"
+    paths-ignore:
+      - "**.md"
   workflow_dispatch:
 
 concurrency:
@@ -25,26 +19,47 @@ permissions:
   contents: read
   packages: write
 
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAMESPACE: ${{ github.repository_owner }}/chiseled-runtimes
+  PLATFORM: linux/amd64
+  # Space-separated target directories that also get the :latest tag.
+  LATEST_TARGETS: "java/25-ubuntu26.04"
+
 jobs:
-  java:
-    name: Java ${{ matrix.java }} / Ubuntu ${{ matrix.ubuntu }}
+  # Works out which images actually changed. Targets are discovered from the
+  # folder layout: base/ubuntu-<release> and <runtime>/<version>-ubuntu<release>.
+  changes:
+    name: Detect changed targets
+    runs-on: ubuntu-24.04
+    outputs:
+      bases: ${{ steps.detect.outputs.bases }}
+      runtimes: ${{ steps.detect.outputs.runtimes }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Detect
+        id: detect
+        env:
+          GITHUB_EVENT_NAME: ${{ github.event_name }}
+          BEFORE_SHA: ${{ github.event.before }}
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: python3 scripts/ci-detect-targets.py
+
+  # Only base images whose directory changed (or every base on a global change).
+  base:
+    name: Base ${{ matrix.ubuntu }}
+    needs: changes
+    if: ${{ needs.changes.outputs.bases != '[]' }}
     runs-on: ubuntu-24.04
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - ubuntu: "26.04"
-            java: "25"
-            lts: "true"
-          - ubuntu: "26.10"
-            java: "27"
-            lts: "false"
-    env:
-      PLATFORM: linux/amd64
-      BASE_IMAGE: ghcr.io/${{ github.repository_owner }}/chiseled-runtimes/base:ubuntu-${{ matrix.ubuntu }}
-      JAVA_IMAGE: ghcr.io/${{ github.repository_owner }}/chiseled-runtimes/java:${{ matrix.java }}-ubuntu${{ matrix.ubuntu }}
-      JAVA_IMAGE_MAJOR: ghcr.io/${{ github.repository_owner }}/chiseled-runtimes/java:${{ matrix.java }}
-      JAVA_IMAGE_LATEST: ghcr.io/${{ github.repository_owner }}/chiseled-runtimes/java:latest
+        include: ${{ fromJSON(needs.changes.outputs.bases) }}
     steps:
       - name: Checkout
         uses: actions/checkout@v5
@@ -53,39 +68,80 @@ jobs:
         if: github.event_name != 'pull_request'
         uses: docker/login-action@v3
         with:
-          registry: ghcr.io
+          registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      # The base image is built locally first, then the Java image uses it via
-      # BASE_IMAGE. This keeps pull requests working without pushing anything.
       - name: Build base image
-        run: docker build --platform "${PLATFORM}" --tag "${BASE_IMAGE}" "base/ubuntu-${{ matrix.ubuntu }}"
+        run: docker build --platform "${PLATFORM}" --tag "${{ matrix.image }}" "${{ matrix.context }}"
 
-      - name: Build Java image
+      - name: Push base image
+        if: github.event_name != 'pull_request'
+        run: docker push "${{ matrix.image }}"
+
+  # Runtimes that changed themselves, or whose Ubuntu base changed. The base is
+  # pulled from the registry when it is already published; otherwise it is built
+  # locally (pull requests, first build, or missing package).
+  runtime:
+    name: ${{ matrix.runtime }} ${{ matrix.version }} / Ubuntu ${{ matrix.ubuntu }}
+    needs: [changes, base]
+    if: ${{ !cancelled() && needs.changes.result == 'success' && needs.changes.outputs.runtimes != '[]' && (needs.base.result == 'success' || needs.base.result == 'skipped') }}
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(needs.changes.outputs.runtimes) }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Log in to GHCR
+        if: github.event_name != 'pull_request'
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Ensure base image
+        run: |
+          # On a PR nothing is pushed, so a changed base must be built locally.
+          # Otherwise the published base is used (the base job has already
+          # pushed it when it changed).
+          if [[ "${{ matrix.base_changed }}" == "true" && "${{ github.event_name }}" == "pull_request" ]]; then
+            docker build --platform "${PLATFORM}" --tag "${{ matrix.base_image }}" "${{ matrix.base_context }}"
+          elif ! docker pull "${{ matrix.base_image }}"; then
+            echo "::warning::Could not pull ${{ matrix.base_image }}, building it locally"
+            docker build --platform "${PLATFORM}" --tag "${{ matrix.base_image }}" "${{ matrix.base_context }}"
+          fi
+
+      - name: Build runtime image
         run: >-
           docker build
           --platform "${PLATFORM}"
-          --build-arg "BASE_IMAGE=${BASE_IMAGE}"
-          --tag "${JAVA_IMAGE}"
-          "java/${{ matrix.java }}-ubuntu${{ matrix.ubuntu }}"
+          --build-arg "BASE_IMAGE=${{ matrix.base_image }}"
+          --tag "${{ matrix.image }}"
+          "${{ matrix.context }}"
 
       - name: Smoke test
-        run: docker run --rm "${JAVA_IMAGE}" java -version
+        run: |
+          smoke="scripts/smoke/${{ matrix.runtime }}.sh"
+          if [[ -x "$smoke" ]]; then
+            "$smoke" "${{ matrix.image }}" "${PLATFORM}"
+          else
+            echo "::warning::No smoke test found at ${smoke}"
+          fi
 
-      - name: Show image sizes
-        run: docker image ls --format 'table {{.Repository}}:{{.Tag}}\t{{.Size}}' | grep -E 'chiseled-runtimes/(base|java)'
+      - name: Show image size
+        run: docker image ls --format 'table {{.Repository}}:{{.Tag}}\t{{.Size}}' "${{ matrix.image }}"
 
-      - name: Push images
+      - name: Push runtime image
         if: github.event_name != 'pull_request'
         run: |
-          docker push "${BASE_IMAGE}"
-          docker push "${JAVA_IMAGE}"
-          docker tag "${JAVA_IMAGE}" "${JAVA_IMAGE_MAJOR}"
-          docker push "${JAVA_IMAGE_MAJOR}"
-          if [[ "${LTS}" == "true" ]]; then
-            docker tag "${JAVA_IMAGE}" "${JAVA_IMAGE_LATEST}"
-            docker push "${JAVA_IMAGE_LATEST}"
+          docker push "${{ matrix.image }}"
+          docker tag "${{ matrix.image }}" "${REGISTRY}/${IMAGE_NAMESPACE}/${{ matrix.runtime }}:${{ matrix.version }}"
+          docker push "${REGISTRY}/${IMAGE_NAMESPACE}/${{ matrix.runtime }}:${{ matrix.version }}"
+          if [[ " ${LATEST_TARGETS} " == *" ${{ matrix.context }} "* ]]; then
+            docker tag "${{ matrix.image }}" "${REGISTRY}/${IMAGE_NAMESPACE}/${{ matrix.runtime }}:latest"
+            docker push "${REGISTRY}/${IMAGE_NAMESPACE}/${{ matrix.runtime }}:latest"
           fi
-        env:
-          LTS: ${{ matrix.lts }}

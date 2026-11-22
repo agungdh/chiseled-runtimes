@@ -55,8 +55,8 @@ docker run --rm -p 8080:8080 \
 
 ## Build lokal
 
-Butuh Docker (BuildKit). Script akan membangun base lalu image Java, menjalankan
-`java -version`, dan (opsional) push:
+Butuh Docker (BuildKit). Tanpa argumen, script membangun semua base lalu semua
+runtime, menjalankan smoke test, dan (opsional) push:
 
 ```bash
 ./scripts/build-local.sh
@@ -66,6 +66,19 @@ PUSH=true ./scripts/build-local.sh
 
 # override registry/owner/platform
 REGISTRY=ghcr.io OWNER=agungdh PLATFORM=linux/amd64 ./scripts/build-local.sh
+```
+
+Bisa juga build target tertentu saja. Dependency base akan dibangun otomatis:
+
+```bash
+# hanya Java 27 (base 26.10 dibangun sebagai dependency)
+./scripts/build-local.sh java/27-ubuntu26.10
+
+# hanya base 26.10
+./scripts/build-local.sh base/ubuntu-26.10
+
+# beberapa target sekaligus
+./scripts/build-local.sh base/ubuntu-26.04 java/25-ubuntu26.04
 ```
 
 Build manual:
@@ -83,17 +96,47 @@ docker build \
 
 ```
 .
-├── .github/workflows/build.yml   # CI: build base + Java, smoke test, push ke GHCR
+├── .github/workflows/build.yml       # CI: deteksi perubahan, build, smoke test, push
 ├── base/
-│   ├── ubuntu-26.04/Dockerfile   # chiselled base (chisel -> scratch)
+│   ├── ubuntu-26.04/Dockerfile       # chiselled base (chisel -> scratch)
 │   └── ubuntu-26.10/Dockerfile
 ├── java/
-│   ├── 25-ubuntu26.04/Dockerfile # Liberica JRE 25
-│   └── 27-ubuntu26.10/Dockerfile # Liberica JRE 27
+│   ├── 25-ubuntu26.04/Dockerfile     # Liberica JRE 25
+│   └── 27-ubuntu26.10/Dockerfile     # Liberica JRE 27
 ├── scripts/
-│   └── build-local.sh
+│   ├── build-local.sh
+│   ├── ci-detect-targets.py          # deteksi target yang berubah di CI
+│   └── smoke/
+│       └── java.sh                   # smoke test per runtime
 └── README.md
 ```
+
+## CI: build selektif
+
+Workflow tidak memakai matrix statis. Job `changes` memindai folder untuk
+menemukan target, lalu hanya membangun yang terpengaruh:
+
+- Ubah `java/27-ubuntu26.10/**` → hanya Java 27 yang dibangun.
+- Ubah `java/25-ubuntu26.04/**` → hanya Java 25 yang dibangun.
+- Ubah `base/ubuntu-26.04/**` → base 26.04 + semua runtime yang memakainya
+  (saat ini Java 25).
+- Ubah `.github/**` atau `workflow_dispatch` → semua target dibangun.
+- Ubah `README.md` / `scripts/**` → tidak ada image yang dibangun.
+
+Runtime baru otomatis terdeteksi selama mengikuti konvensi folder:
+
+```
+<runtime>/<versi>-ubuntu<rilis>/Dockerfile
+```
+
+Contoh: `nodejs/24-ubuntu26.04/Dockerfile`, `php/8.6-ubuntu26.04/Dockerfile`.
+Tambahkan juga `scripts/smoke/<runtime>.sh` (menerima image dan platform sebagai
+argumen) supaya ikut di-smoke test. Tag `<versi>` (misalnya `:24`, `:8.6`) dibuat
+otomatis; tag `:latest` hanya untuk target yang terdaftar di `LATEST_TARGETS`
+pada workflow.
+
+Kalau base belum ada di registry (PR, build pertama, atau package hilang), CI
+membangun base tersebut secara lokal sebelum membangun runtime-nya.
 
 ## Update versi
 
