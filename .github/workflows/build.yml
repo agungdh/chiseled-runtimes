@@ -1,0 +1,91 @@
+name: build
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "base/**"
+      - "java/**"
+      - "scripts/**"
+      - ".github/workflows/build.yml"
+  pull_request:
+    branches: [main]
+    paths:
+      - "base/**"
+      - "java/**"
+      - "scripts/**"
+      - ".github/workflows/build.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: build-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  java:
+    name: Java ${{ matrix.java }} / Ubuntu ${{ matrix.ubuntu }}
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - ubuntu: "26.04"
+            java: "25"
+            lts: "true"
+          - ubuntu: "26.10"
+            java: "27"
+            lts: "false"
+    env:
+      PLATFORM: linux/amd64
+      BASE_IMAGE: ghcr.io/${{ github.repository_owner }}/chiseled-runtimes/base:ubuntu-${{ matrix.ubuntu }}
+      JAVA_IMAGE: ghcr.io/${{ github.repository_owner }}/chiseled-runtimes/java:${{ matrix.java }}-ubuntu${{ matrix.ubuntu }}
+      JAVA_IMAGE_MAJOR: ghcr.io/${{ github.repository_owner }}/chiseled-runtimes/java:${{ matrix.java }}
+      JAVA_IMAGE_LATEST: ghcr.io/${{ github.repository_owner }}/chiseled-runtimes/java:latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Log in to GHCR
+        if: github.event_name != 'pull_request'
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # The base image is built locally first, then the Java image uses it via
+      # BASE_IMAGE. This keeps pull requests working without pushing anything.
+      - name: Build base image
+        run: docker build --platform "${PLATFORM}" --tag "${BASE_IMAGE}" "base/ubuntu-${{ matrix.ubuntu }}"
+
+      - name: Build Java image
+        run: >-
+          docker build
+          --platform "${PLATFORM}"
+          --build-arg "BASE_IMAGE=${BASE_IMAGE}"
+          --tag "${JAVA_IMAGE}"
+          "java/${{ matrix.java }}-ubuntu${{ matrix.ubuntu }}"
+
+      - name: Smoke test
+        run: docker run --rm "${JAVA_IMAGE}" java -version
+
+      - name: Show image sizes
+        run: docker image ls --format 'table {{.Repository}}:{{.Tag}}\t{{.Size}}' | grep -E 'chiseled-runtimes/(base|java)'
+
+      - name: Push images
+        if: github.event_name != 'pull_request'
+        run: |
+          docker push "${BASE_IMAGE}"
+          docker push "${JAVA_IMAGE}"
+          docker tag "${JAVA_IMAGE}" "${JAVA_IMAGE_MAJOR}"
+          docker push "${JAVA_IMAGE_MAJOR}"
+          if [[ "${LTS}" == "true" ]]; then
+            docker tag "${JAVA_IMAGE}" "${JAVA_IMAGE_LATEST}"
+            docker push "${JAVA_IMAGE_LATEST}"
+          fi
+        env:
+          LTS: ${{ matrix.lts }}
