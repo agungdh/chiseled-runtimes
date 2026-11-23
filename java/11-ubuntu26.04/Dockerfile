@@ -4,12 +4,15 @@
 # Versions and checksums are pinned for reproducible builds; bump them together.
 ARG BASE_IMAGE=ghcr.io/agungdh/chiseled-runtimes/base:ubuntu-26.04
 ARG LIBERICA_VERSION=11.0.33.1+5
-ARG LIBERICA_SHA256=9f1a3fde1239ddbf2773ec7cf648ce9669fadf062bfa0ec3be30f72d5428ccba
+ARG LIBERICA_SHA256_AMD64=9f1a3fde1239ddbf2773ec7cf648ce9669fadf062bfa0ec3be30f72d5428ccba
+ARG LIBERICA_SHA256_ARM64=3a4aec02c3c17bdf3e7083d42a4513fe023a8ee2fb3b43d64f4d8bf78b34ceeb
 
 FROM ubuntu:26.04 AS liberica
 
+ARG TARGETARCH
 ARG LIBERICA_VERSION
-ARG LIBERICA_SHA256
+ARG LIBERICA_SHA256_AMD64
+ARG LIBERICA_SHA256_ARM64
 
 SHELL ["/bin/bash", "-euxo", "pipefail", "-c"]
 
@@ -17,9 +20,14 @@ RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates curl \
     && rm -rf /var/lib/apt/lists/*
 
-RUN url="https://github.com/bell-sw/Liberica/releases/download/${LIBERICA_VERSION}/bellsoft-jre${LIBERICA_VERSION}-linux-amd64.tar.gz" \
+RUN case "${TARGETARCH}" in \
+        amd64) jre_arch="amd64"; sha256="${LIBERICA_SHA256_AMD64}" ;; \
+        arm64) jre_arch="aarch64"; sha256="${LIBERICA_SHA256_ARM64}" ;; \
+        *) echo "error: unsupported TARGETARCH '${TARGETARCH}'" >&2; exit 1 ;; \
+    esac \
+    && url="https://github.com/bell-sw/Liberica/releases/download/${LIBERICA_VERSION}/bellsoft-jre${LIBERICA_VERSION}-linux-${jre_arch}.tar.gz" \
     && curl -fsSL -o /tmp/liberica.tar.gz "${url}" \
-    && echo "${LIBERICA_SHA256}  /tmp/liberica.tar.gz" | sha256sum -c - \
+    && echo "${sha256}  /tmp/liberica.tar.gz" | sha256sum -c - \
     && mkdir -p /opt/java/openjdk \
     && tar -xzf /tmp/liberica.tar.gz -C /opt/java/openjdk --strip-components=1 \
     && rm -f /tmp/liberica.tar.gz \

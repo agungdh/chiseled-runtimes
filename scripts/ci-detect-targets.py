@@ -6,6 +6,10 @@ Targets are discovered from the repository layout:
     base/ubuntu-<release>/Dockerfile          -> base image
     <runtime>/<version>-ubuntu<release>/       -> runtime image
 
+Every target is built once per architecture on a native GitHub runner, then the
+per-architecture images are merged into one multi-arch manifest. No QEMU is
+used: amd64 jobs run on `ubuntu-26.04` and arm64 jobs on `ubuntu-26.04-arm`.
+
 A target is rebuilt when any file inside its directory changes. A runtime is
 also rebuilt when the Ubuntu base it depends on changes. Changes under
 .github/ rebuild everything, while changes elsewhere (README, scripts, ...)
@@ -18,12 +22,19 @@ Environment:
     PR_HEAD_SHA         pull_request: head commit
     REGISTRY            image registry (default: ghcr.io)
     IMAGE_NAMESPACE     image namespace (default: agungdh/chiseled-runtimes)
-    GITHUB_OUTPUT       file to append the `bases` and `runtimes` outputs to
+    REVISION            git revision used in build tags (default: unknown)
+    BUILD_STAMP         unique build timestamp used in build tags
+    LATEST_TARGETS      space-separated contexts that also get :latest
+    RUNNER_AMD64        runner label for amd64 (default: ubuntu-26.04)
+    RUNNER_ARM64        runner label for arm64 (default: ubuntu-26.04-arm)
+    GITHUB_OUTPUT       file to append the job outputs to
     CHANGED_FILES       optional newline-separated override, for local testing
 
 Outputs (JSON arrays, written to GITHUB_OUTPUT):
-    bases     base images that changed
-    runtimes  runtime images that changed or depend on a changed base
+    base_builds      per-arch base image builds
+    base_merges      multi-arch base manifests to create after the builds
+    runtime_builds   per-arch runtime image builds
+    runtime_merges   multi-arch runtime manifests to create after the builds
 """
 
 from __future__ import annotations
@@ -35,6 +46,21 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
+
+ARCHES = (
+    {
+        "arch": "amd64",
+        "platform": "linux/amd64",
+        "env": "RUNNER_AMD64",
+        "default_runner": "ubuntu-26.04",
+    },
+    {
+        "arch": "arm64",
+        "platform": "linux/arm64",
+        "env": "RUNNER_ARM64",
+        "default_runner": "ubuntu-26.04-arm",
+    },
+)
 
 
 def git(*args: str) -> str:
@@ -125,9 +151,29 @@ def discover_runtimes() -> dict[str, dict[str, str]]:
     return runtimes
 
 
+def arch_entries() -> list[dict[str, str]]:
+    entries = []
+    for arch in ARCHES:
+        entries.append(
+            {
+                "arch": arch["arch"],
+                "platform": arch["platform"],
+                "runner": os.environ.get(arch["env"], arch["default_runner"]),
+            }
+        )
+    return entries
+
+
+def sources_for(repository: str, tag: str) -> list[str]:
+    return [f"{repository}:{tag}-{arch['arch']}" for arch in ARCHES]
+
+
 def main() -> int:
     registry = os.environ.get("REGISTRY", "ghcr.io")
     namespace = os.environ.get("IMAGE_NAMESPACE", "agungdh/chiseled-runtimes")
+    revision = os.environ.get("REVISION", "unknown")
+    stamp = os.environ.get("BUILD_STAMP", "unknown")
+    latest_targets = set(os.environ.get("LATEST_TARGETS", "").split())
 
     bases = discover_bases()
     runtimes = discover_runtimes()
@@ -145,17 +191,42 @@ def main() -> int:
         if rebuild_all or any(path.startswith(context + "/") for path in changed_set)
     }
 
-    base_entries = [
-        {
-            "ubuntu": ubuntu,
-            "tag": f"ubuntu-{ubuntu}",
-            "context": bases[ubuntu],
-            "image": f"{registry}/{namespace}/base:ubuntu-{ubuntu}",
-        }
-        for ubuntu in sorted(changed_bases)
-    ]
+    base_builds = []
+    base_merges = []
+    for ubuntu in sorted(changed_bases):
+        tag = f"ubuntu-{ubuntu}"
+        unique_tag = f"{tag}-{revision}-{stamp}"
+        repository = f"{registry}/{namespace}/base"
 
-    runtime_entries = []
+        for arch in arch_entries():
+            base_builds.append(
+                {
+                    "ubuntu": ubuntu,
+                    "tag": tag,
+                    "context": bases[ubuntu],
+                    "repository": repository,
+                    "image": f"{repository}:{tag}-{arch['arch']}",
+                    "push_tags": [f"{tag}-{arch['arch']}", f"{unique_tag}-{arch['arch']}"],
+                    "arch": arch["arch"],
+                    "platform": arch["platform"],
+                    "runner": arch["runner"],
+                }
+            )
+
+        base_merges.append(
+            {
+                "kind": "base",
+                "ubuntu": ubuntu,
+                "tag": tag,
+                "context": bases[ubuntu],
+                "repository": repository,
+                "sources": sources_for(repository, tag),
+                "tags": [tag, unique_tag],
+            }
+        )
+
+    runtime_builds = []
+    runtime_merges = []
     for context, target in sorted(runtimes.items()):
         if target["ubuntu"] not in bases:
             print(
@@ -171,27 +242,54 @@ def main() -> int:
         if not (base_changed or runtime_changed):
             continue
 
-        runtime_entries.append(
+        tag = target["tag"]
+        unique_tag = f"{tag}-{revision}-{stamp}"
+        repository = f"{registry}/{namespace}/{target['runtime']}"
+        tags = [tag, unique_tag]
+        if target["version"] != tag:
+            tags.append(target["version"])
+        if context in latest_targets:
+            tags.append("latest")
+
+        for arch in arch_entries():
+            runtime_builds.append(
+                {
+                    **target,
+                    "base_changed": base_changed,
+                    "base_context": bases[target["ubuntu"]],
+                    "base_image": f"{registry}/{namespace}/base:ubuntu-{target['ubuntu']}",
+                    "repository": repository,
+                    "image": f"{repository}:{tag}-{arch['arch']}",
+                    "push_tags": [f"{pushed}-{arch['arch']}" for pushed in tags],
+                    "arch": arch["arch"],
+                    "platform": arch["platform"],
+                    "runner": arch["runner"],
+                }
+            )
+
+        runtime_merges.append(
             {
+                "kind": "runtime",
                 **target,
-                "base_changed": base_changed,
-                "base_context": bases[target["ubuntu"]],
-                "base_image": f"{registry}/{namespace}/base:ubuntu-{target['ubuntu']}",
-                "image": f"{registry}/{namespace}/{target['runtime']}:{target['tag']}",
+                "repository": repository,
+                "sources": sources_for(repository, tag),
+                "tags": tags,
             }
         )
 
     print(f"changed files: {len(changed_set) if changed is not None else 'all'}")
-    print(f"bases:    {[e['image'] for e in base_entries]}")
-    print(f"runtimes: {[e['image'] for e in runtime_entries]}")
+    print(f"base builds:      {[e['image'] for e in base_builds]}")
+    print(f"base merges:      {[e['repository'] + ':' + e['tag'] for e in base_merges]}")
+    print(f"runtime builds:   {[e['image'] for e in runtime_builds]}")
+    print(f"runtime merges:   {[e['repository'] + ':' + e['tag'] for e in runtime_merges]}")
 
     output_path = os.environ.get("GITHUB_OUTPUT")
     if output_path:
         with open(output_path, "a", encoding="utf-8") as handle:
-            handle.write(f"bases={json.dumps(base_entries, separators=(',', ':'))}\n")
-            handle.write(
-                f"runtimes={json.dumps(runtime_entries, separators=(',', ':'))}\n"
-            )
+            handle.write(f"base_builds={json.dumps(base_builds, separators=(',', ':'))}\n")
+            handle.write(f"base_merges={json.dumps(base_merges, separators=(',', ':'))}\n")
+            handle.write(f"runtime_builds={json.dumps(runtime_builds, separators=(',', ':'))}\n")
+            handle.write(f"runtime_merges={json.dumps(runtime_merges, separators=(',', ':'))}\n")
 
     return 0
 

@@ -14,16 +14,23 @@ set -euo pipefail
 #   REGISTRY        container registry to tag images for (default: ghcr.io)
 #   OWNER           repository owner / namespace        (default: agungdh)
 #   REPO            repository name                     (default: chiseled-runtimes)
-#   PLATFORM        target platform                     (default: linux/amd64)
+#   PLATFORMS       target platforms, space separated   (default: linux/amd64)
+#                   use "linux/amd64 linux/arm64" for both; cross-building
+#                   arm64 on an amd64 host needs QEMU/binfmt locally
+#   PLATFORM        legacy single-platform override (used when PLATFORMS is unset)
 #   PUSH            push images after a successful build (default: false)
 #   LATEST_TARGETS  space-separated targets that also get :latest
 #                   (default: java/25-ubuntu26.04)
 #   REVISION        git revision recorded in labels/tags (default: current HEAD)
+#
+# With PUSH=true each architecture is pushed under <tag>-<arch> and then merged
+# into the regular channel tags (<tag>, <version>, :latest) as a multi-arch
+# manifest. The merge uses `docker buildx imagetools`, so Buildx is required.
 
 REGISTRY="${REGISTRY:-ghcr.io}"
 OWNER="${OWNER:-agungdh}"
 REPO="${REPO:-chiseled-runtimes}"
-PLATFORM="${PLATFORM:-linux/amd64}"
+PLATFORMS="${PLATFORMS:-${PLATFORM:-linux/amd64}}"
 PUSH="${PUSH:-false}"
 LATEST_TARGETS="${LATEST_TARGETS:-java/25-ubuntu26.04}"
 
@@ -35,14 +42,50 @@ REVISION="${REVISION:-unknown}"
 CREATED="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 BUILD_STAMP="$(date -u +%Y%m%d%H%M%S)"
 
-BUILT_BASES=" "
+read -r -a platforms <<< "${PLATFORMS}"
+arches=()
+for platform in "${platforms[@]}"; do
+  case "${platform}" in
+    linux/amd64) arch="amd64" ;;
+    linux/arm64 | linux/arm64/v8) arch="arm64" ;;
+    *)
+      printf 'error: unsupported platform %s (use linux/amd64 or linux/arm64)\n' "${platform}" >&2
+      exit 1
+      ;;
+  esac
+  [[ " ${arches[*]} " == *" ${arch} "* ]] || arches+=("${arch}")
+done
 
-mark_base_built() {
-  BUILT_BASES+="$1 "
-}
+BUILT_BASES=()
+BASE_MERGES=()
+RUNTIME_MERGES=()
 
 base_is_built() {
-  [[ "${BUILT_BASES}" == *" $1 "* ]]
+  local ubuntu="$1" arch="$2" built
+  for built in "${BUILT_BASES[@]}"; do
+    [[ "${built}" == "${ubuntu}:${arch}" ]] && return 0
+  done
+  return 1
+}
+
+mark_base_built() {
+  BUILT_BASES+=("$1:$2")
+}
+
+add_base_merge() {
+  local ubuntu="$1" existing
+  for existing in "${BASE_MERGES[@]}"; do
+    [[ "${existing}" == "${ubuntu}" ]] && return 0
+  done
+  BASE_MERGES+=("${ubuntu}")
+}
+
+add_runtime_merge() {
+  local dir="$1" existing
+  for existing in "${RUNTIME_MERGES[@]}"; do
+    [[ "${existing}" == "${dir}" ]] && return 0
+  done
+  RUNTIME_MERGES+=("${dir}")
 }
 
 image_repo() {
@@ -65,36 +108,57 @@ push_images() {
   done <<< "${lines}"
 }
 
-build_base() {
-  local ubuntu="$1"
+# merge_tags <repository> <comma-separated tags> <arch>...
+merge_tags() {
+  local repository="$1" tags="$2" tag digest_ref lines
+  shift 2
+
+  lines="$(scripts/merge-manifests.sh "${repository}" "${tags}" "$@")"
+  while IFS=$'\t' read -r tag digest_ref; do
+    [[ -n "${tag}" ]] || continue
+    printf '==> Merged %s\n    %s\n' "${repository}:${tag}" "${digest_ref}"
+  done <<< "${lines}"
+}
+
+build_base_arch() {
+  local ubuntu="$1" arch="$2"
   local dir="base/ubuntu-${ubuntu}"
   local ref unique_tag
-  ref="$(image_ref base "ubuntu-${ubuntu}")"
 
-  printf '==> Building %s (%s)\n' "${ref}" "${dir}"
+  ref="$(image_ref base "ubuntu-${ubuntu}-${arch}")"
+  printf '==> Building %s (%s, linux/%s)\n' "${ref}" "${dir}" "${arch}"
   docker build \
-    --platform "${PLATFORM}" \
+    --platform "linux/${arch}" \
     --label "org.opencontainers.image.revision=${REVISION}" \
     --label "org.opencontainers.image.created=${CREATED}" \
     --tag "${ref}" \
     "${dir}"
-  mark_base_built "${ubuntu}"
+  mark_base_built "${ubuntu}" "${arch}"
 
   if [[ "${PUSH}" == "true" ]]; then
-    unique_tag="ubuntu-${ubuntu}-${REVISION}-${BUILD_STAMP}"
-    push_images "${ref}" "$(image_repo base)" "ubuntu-${ubuntu}" "${unique_tag}"
+    unique_tag="ubuntu-${ubuntu}-${REVISION}-${BUILD_STAMP}-${arch}"
+    push_images "${ref}" "$(image_repo base)" "ubuntu-${ubuntu}-${arch}" "${unique_tag}"
+    add_base_merge "${ubuntu}"
   fi
 }
 
+build_base() {
+  local ubuntu="$1" arch
+  for arch in "${arches[@]}"; do
+    build_base_arch "${ubuntu}" "${arch}"
+  done
+}
+
 ensure_base() {
-  local ubuntu="$1"
-  base_is_built "${ubuntu}" && return 0
-  build_base "${ubuntu}"
+  local ubuntu="$1" arch="$2"
+  base_is_built "${ubuntu}" "${arch}" && return 0
+  build_base_arch "${ubuntu}" "${arch}"
 }
 
 build_runtime() {
   local dir="$1"
-  local runtime tag version ubuntu base_dir base_ref ref smoke unique_tag
+  local runtime tag version ubuntu base_dir ref smoke
+  local arch base_ref unique_tag latest=false
   local -a push_tags
 
   runtime="$(basename "$(dirname "${dir}")")"
@@ -108,35 +172,80 @@ build_runtime() {
     return 1
   fi
 
-  base_ref="$(image_ref base "ubuntu-${ubuntu}")"
-  ensure_base "${ubuntu}"
+  [[ " ${LATEST_TARGETS} " == *" ${dir} "* ]] && latest=true
 
-  ref="$(image_ref "${runtime}" "${tag}")"
-  printf '==> Building %s (%s)\n' "${ref}" "${dir}"
-  docker build \
-    --platform "${PLATFORM}" \
-    --build-arg "BASE_IMAGE=${base_ref}" \
-    --label "org.opencontainers.image.revision=${REVISION}" \
-    --label "org.opencontainers.image.created=${CREATED}" \
-    --tag "${ref}" \
-    "${dir}"
+  for arch in "${arches[@]}"; do
+    base_ref="$(image_ref base "ubuntu-${ubuntu}-${arch}")"
+    ensure_base "${ubuntu}" "${arch}"
 
-  smoke="scripts/smoke/${runtime}.sh"
-  if [[ -x "${smoke}" ]]; then
-    printf '==> Smoke testing %s\n' "${ref}"
-    "${smoke}" "${ref}" "${PLATFORM}"
-  else
-    printf 'warning: no smoke test for %s (%s)\n' "${runtime}" "${smoke}" >&2
-  fi
+    ref="$(image_ref "${runtime}" "${tag}-${arch}")"
+    printf '==> Building %s (%s, linux/%s)\n' "${ref}" "${dir}" "${arch}"
+    docker build \
+      --platform "linux/${arch}" \
+      --build-arg "BASE_IMAGE=${base_ref}" \
+      --label "org.opencontainers.image.revision=${REVISION}" \
+      --label "org.opencontainers.image.created=${CREATED}" \
+      --tag "${ref}" \
+      "${dir}"
 
-  if [[ "${PUSH}" == "true" ]]; then
-    unique_tag="${tag}-${REVISION}-${BUILD_STAMP}"
-    push_tags=("${tag}" "${unique_tag}" "${version}")
-    if [[ " ${LATEST_TARGETS} " == *" ${dir} "* ]]; then
-      push_tags+=(latest)
+    smoke="scripts/smoke/${runtime}.sh"
+    if [[ -x "${smoke}" ]]; then
+      printf '==> Smoke testing %s\n' "${ref}"
+      "${smoke}" "${ref}" "linux/${arch}"
+    else
+      printf 'warning: no smoke test for %s (%s)\n' "${runtime}" "${smoke}" >&2
     fi
-    push_images "${ref}" "$(image_repo "${runtime}")" "${push_tags[@]}"
-  fi
+
+    if [[ "${PUSH}" == "true" ]]; then
+      unique_tag="${tag}-${REVISION}-${BUILD_STAMP}-${arch}"
+      push_tags=("${tag}-${arch}" "${unique_tag}" "${version}-${arch}")
+      if [[ "${latest}" == "true" ]]; then
+        push_tags+=("latest-${arch}")
+      fi
+      push_images "${ref}" "$(image_repo "${runtime}")" "${push_tags[@]}"
+      add_runtime_merge "${dir}"
+    fi
+  done
+}
+
+merge_bases() {
+  local ubuntu repository tags arch
+  local -a sources
+
+  for ubuntu in "${BASE_MERGES[@]}"; do
+    repository="$(image_repo base)"
+    tags="ubuntu-${ubuntu},ubuntu-${ubuntu}-${REVISION}-${BUILD_STAMP}"
+    sources=()
+    for arch in "${arches[@]}"; do
+      sources+=("${repository}:ubuntu-${ubuntu}-${arch}")
+    done
+    merge_tags "${repository}" "${tags}" "${sources[@]}"
+  done
+}
+
+merge_runtimes() {
+  local dir runtime tag version ubuntu repository tags arch latest
+  local -a sources
+
+  for dir in "${RUNTIME_MERGES[@]}"; do
+    runtime="$(basename "$(dirname "${dir}")")"
+    tag="$(basename "${dir}")"
+    version="${tag%%-ubuntu*}"
+    ubuntu="${tag##*-ubuntu}"
+    repository="$(image_repo "${runtime}")"
+
+    tags="${tag},${tag}-${REVISION}-${BUILD_STAMP}"
+    [[ "${version}" != "${tag}" ]] && tags+=",${version}"
+    if [[ " ${LATEST_TARGETS} " == *" ${dir} "* ]]; then
+      tags+=",latest"
+    fi
+
+    sources=()
+    for arch in "${arches[@]}"; do
+      sources+=("${repository}:${tag}-${arch}")
+    done
+    merge_tags "${repository}" "${tags}" "${sources[@]}"
+  done
 }
 
 discover_targets() {
@@ -190,3 +299,8 @@ for target in "${targets[@]}"; do
       ;;
   esac
 done
+
+if [[ "${PUSH}" == "true" ]]; then
+  merge_bases
+  merge_runtimes
+fi

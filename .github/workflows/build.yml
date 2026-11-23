@@ -22,24 +22,45 @@ permissions:
 env:
   REGISTRY: ghcr.io
   IMAGE_NAMESPACE: ${{ github.repository_owner }}/chiseled-runtimes
-  PLATFORM: linux/amd64
   # Space-separated target directories that also get the :latest tag.
   LATEST_TARGETS: "java/25-ubuntu26.04"
+  # Native runners per architecture. There is no QEMU emulation: every
+  # per-arch image is built on a runner of that architecture and the results
+  # are merged into a multi-arch manifest afterwards.
+  RUNNER_AMD64: ubuntu-26.04
+  RUNNER_ARM64: ubuntu-26.04-arm
 
 jobs:
-  # Works out which images actually changed. Targets are discovered from the
-  # folder layout: base/ubuntu-<release> and <runtime>/<version>-ubuntu<release>.
+  # Works out which images actually changed and expands every target into one
+  # build entry per architecture. Targets are discovered from the folder
+  # layout: base/ubuntu-<release> and <runtime>/<version>-ubuntu<release>.
   changes:
     name: Detect changed targets
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     outputs:
-      bases: ${{ steps.detect.outputs.bases }}
-      runtimes: ${{ steps.detect.outputs.runtimes }}
+      base_builds: ${{ steps.detect.outputs.base_builds }}
+      base_merges: ${{ steps.detect.outputs.base_merges }}
+      runtime_builds: ${{ steps.detect.outputs.runtime_builds }}
+      runtime_merges: ${{ steps.detect.outputs.runtime_merges }}
+      revision: ${{ steps.meta.outputs.revision }}
+      stamp: ${{ steps.meta.outputs.stamp }}
+      created: ${{ steps.meta.outputs.created }}
     steps:
       - name: Checkout
         uses: actions/checkout@v5
         with:
           fetch-depth: 0
+
+      # Computed once so both architectures share the same build tag and
+      # OCI labels.
+      - name: Prepare build metadata
+        id: meta
+        run: |
+          {
+            echo "revision=${GITHUB_SHA}"
+            echo "stamp=$(date -u +%Y%m%d%H%M%S)"
+            echo "created=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          } >> "$GITHUB_OUTPUT"
 
       - name: Detect
         id: detect
@@ -48,18 +69,24 @@ jobs:
           BEFORE_SHA: ${{ github.event.before }}
           PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
           PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          REVISION: ${{ steps.meta.outputs.revision }}
+          BUILD_STAMP: ${{ steps.meta.outputs.stamp }}
         run: python3 scripts/ci-detect-targets.py
 
-  # Only base images whose directory changed (or every base on a global change).
+  # Base images, one native job per architecture. Only bases whose directory
+  # changed (or every base on a global change) are built.
   base:
-    name: Base ${{ matrix.ubuntu }}
+    name: Base ${{ matrix.ubuntu }} (${{ matrix.arch }})
     needs: changes
-    if: ${{ needs.changes.outputs.bases != '[]' }}
-    runs-on: ubuntu-24.04
+    if: ${{ needs.changes.outputs.base_builds != '[]' }}
+    runs-on: ${{ matrix.runner }}
+    env:
+      REVISION: ${{ needs.changes.outputs.revision }}
+      CREATED: ${{ needs.changes.outputs.created }}
     strategy:
       fail-fast: false
       matrix:
-        include: ${{ fromJSON(needs.changes.outputs.bases) }}
+        include: ${{ fromJSON(needs.changes.outputs.base_builds) }}
     steps:
       - name: Checkout
         uses: actions/checkout@v5
@@ -72,18 +99,10 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Prepare build metadata
-        run: |
-          {
-            echo "REVISION=${GITHUB_SHA}"
-            echo "CREATED=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-            echo "BUILD_STAMP=$(date -u +%Y%m%d%H%M%S)"
-          } >> "$GITHUB_ENV"
-
       - name: Build base image
         run: >-
           docker build
-          --platform "${PLATFORM}"
+          --platform "${{ matrix.platform }}"
           --label "org.opencontainers.image.revision=${REVISION}"
           --label "org.opencontainers.image.created=${CREATED}"
           --tag "${{ matrix.image }}"
@@ -92,12 +111,11 @@ jobs:
       - name: Push base image
         if: github.event_name != 'pull_request'
         run: |
-          repo="${REGISTRY}/${IMAGE_NAMESPACE}/base"
-          unique_tag="${{ matrix.tag }}-${REVISION}-${BUILD_STAMP}"
-          lines="$(scripts/push-image.sh "${{ matrix.image }}" "${repo}" "${{ matrix.tag }}" "${unique_tag}")"
+          read -r -a tags <<< "${{ join(matrix.push_tags, ' ') }}"
+          lines="$(scripts/push-image.sh "${{ matrix.image }}" "${{ matrix.repository }}" "${tags[@]}")"
 
           {
-            echo "### Base ${{ matrix.ubuntu }}"
+            echo "### Base ${{ matrix.ubuntu }} (${{ matrix.arch }})"
             echo ""
             echo "| Tag | Digest |"
             echo "|---|---|"
@@ -107,29 +125,63 @@ jobs:
             done <<< "${lines}"
           } >> "${GITHUB_STEP_SUMMARY:-/dev/null}"
 
-  # Runtimes that changed themselves, or whose Ubuntu base changed. The base is
-  # pulled from the registry when it is already published; otherwise it is built
-  # locally (pull requests, first build, or missing package).
-  runtime:
-    name: ${{ matrix.runtime }} ${{ matrix.version }} / Ubuntu ${{ matrix.ubuntu }}
+  # Merge the per-arch base images into the multi-arch tags that runtimes (and
+  # users) consume. This only references manifests in the registry, so it does
+  # not need emulation and can run on any runner.
+  merge_base:
+    name: Merge base ${{ matrix.ubuntu }}
     needs: [changes, base]
-    if: ${{ !cancelled() && needs.changes.result == 'success' && needs.changes.outputs.runtimes != '[]' && (needs.base.result == 'success' || needs.base.result == 'skipped') }}
-    runs-on: ubuntu-24.04
+    if: ${{ !cancelled() && github.event_name != 'pull_request' && needs.changes.outputs.base_merges != '[]' && needs.base.result == 'success' }}
+    runs-on: ubuntu-26.04
     strategy:
       fail-fast: false
       matrix:
-        include: ${{ fromJSON(needs.changes.outputs.runtimes) }}
+        include: ${{ fromJSON(needs.changes.outputs.base_merges) }}
     steps:
       - name: Checkout
         uses: actions/checkout@v5
 
-      - name: Prepare build metadata
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Create multi-arch manifest
         run: |
+          read -r -a sources <<< "${{ join(matrix.sources, ' ') }}"
+          tags="${{ join(matrix.tags, ',') }}"
+          lines="$(scripts/merge-manifests.sh "${{ matrix.repository }}" "${tags}" "${sources[@]}")"
+
           {
-            echo "REVISION=${GITHUB_SHA}"
-            echo "CREATED=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-            echo "BUILD_STAMP=$(date -u +%Y%m%d%H%M%S)"
-          } >> "$GITHUB_ENV"
+            echo "### Base ${{ matrix.ubuntu }} (multi-arch)"
+            echo ""
+            echo "| Tag | Digest |"
+            echo "|---|---|"
+            while IFS=$'\t' read -r tag digest_ref; do
+              [[ -n "${tag}" ]] || continue
+              echo "| \`${tag}\` | \`${digest_ref}\` |"
+            done <<< "${lines}"
+          } >> "${GITHUB_STEP_SUMMARY:-/dev/null}"
+
+  # Runtime images, one native job per architecture. Runtimes are rebuilt when
+  # they changed themselves or when their Ubuntu base changed.
+  runtime:
+    name: ${{ matrix.runtime }} ${{ matrix.version }} / Ubuntu ${{ matrix.ubuntu }} (${{ matrix.arch }})
+    needs: [changes, base, merge_base]
+    if: ${{ !cancelled() && needs.changes.result == 'success' && needs.changes.outputs.runtime_builds != '[]' && (needs.base.result == 'success' || needs.base.result == 'skipped') && (needs.merge_base.result == 'success' || needs.merge_base.result == 'skipped') }}
+    runs-on: ${{ matrix.runner }}
+    env:
+      REVISION: ${{ needs.changes.outputs.revision }}
+      CREATED: ${{ needs.changes.outputs.created }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(needs.changes.outputs.runtime_builds) }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
 
       - name: Log in to GHCR
         if: github.event_name != 'pull_request'
@@ -141,12 +193,12 @@ jobs:
 
       - name: Ensure base image
         run: |
-          # On a PR nothing is pushed, so a changed base must be built locally.
-          # Otherwise the published base is used (the base job has already
-          # pushed it when it changed).
+          # On a PR nothing is pushed, so a changed base must be built locally
+          # for this architecture. Otherwise the published multi-arch base is
+          # used (merge_base has already published it when it changed).
           build_base() {
             docker build \
-              --platform "${PLATFORM}" \
+              --platform "${{ matrix.platform }}" \
               --label "org.opencontainers.image.revision=${REVISION}" \
               --label "org.opencontainers.image.created=${CREATED}" \
               --tag "${{ matrix.base_image }}" \
@@ -155,7 +207,7 @@ jobs:
 
           if [[ "${{ matrix.base_changed }}" == "true" && "${{ github.event_name }}" == "pull_request" ]]; then
             build_base
-          elif ! docker pull "${{ matrix.base_image }}"; then
+          elif ! docker pull --platform "${{ matrix.platform }}" "${{ matrix.base_image }}"; then
             echo "::warning::Could not pull ${{ matrix.base_image }}, building it locally"
             build_base
           fi
@@ -163,7 +215,7 @@ jobs:
       - name: Build runtime image
         run: >-
           docker build
-          --platform "${PLATFORM}"
+          --platform "${{ matrix.platform }}"
           --build-arg "BASE_IMAGE=${{ matrix.base_image }}"
           --label "org.opencontainers.image.revision=${REVISION}"
           --label "org.opencontainers.image.created=${CREATED}"
@@ -174,7 +226,7 @@ jobs:
         run: |
           smoke="scripts/smoke/${{ matrix.runtime }}.sh"
           if [[ -x "$smoke" ]]; then
-            "$smoke" "${{ matrix.image }}" "${PLATFORM}"
+            "$smoke" "${{ matrix.image }}" "${{ matrix.platform }}"
           else
             echo "::warning::No smoke test found at ${smoke}"
           fi
@@ -185,17 +237,50 @@ jobs:
       - name: Push runtime image
         if: github.event_name != 'pull_request'
         run: |
-          repo="${REGISTRY}/${IMAGE_NAMESPACE}/${{ matrix.runtime }}"
-          unique_tag="${{ matrix.tag }}-${REVISION}-${BUILD_STAMP}"
-          tags=("${{ matrix.tag }}" "${unique_tag}" "${{ matrix.version }}")
-          if [[ " ${LATEST_TARGETS} " == *" ${{ matrix.context }} "* ]]; then
-            tags+=(latest)
-          fi
-
-          lines="$(scripts/push-image.sh "${{ matrix.image }}" "${repo}" "${tags[@]}")"
+          read -r -a tags <<< "${{ join(matrix.push_tags, ' ') }}"
+          lines="$(scripts/push-image.sh "${{ matrix.image }}" "${{ matrix.repository }}" "${tags[@]}")"
 
           {
-            echo "### ${{ matrix.runtime }} ${{ matrix.version }} (Ubuntu ${{ matrix.ubuntu }})"
+            echo "### ${{ matrix.runtime }} ${{ matrix.version }} (Ubuntu ${{ matrix.ubuntu }}, ${{ matrix.arch }})"
+            echo ""
+            echo "| Tag | Digest |"
+            echo "|---|---|"
+            while IFS=$'\t' read -r tag digest_ref; do
+              [[ -n "${tag}" ]] || continue
+              echo "| \`${tag}\` | \`${digest_ref}\` |"
+            done <<< "${lines}"
+          } >> "${GITHUB_STEP_SUMMARY:-/dev/null}"
+
+  # Merge the per-arch runtime images into the user-facing channel tags
+  # (including :<version> and :latest when configured).
+  merge_runtime:
+    name: Merge ${{ matrix.runtime }} ${{ matrix.version }} / Ubuntu ${{ matrix.ubuntu }}
+    needs: [changes, runtime]
+    if: ${{ !cancelled() && github.event_name != 'pull_request' && needs.changes.outputs.runtime_merges != '[]' && needs.runtime.result == 'success' }}
+    runs-on: ubuntu-26.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(needs.changes.outputs.runtime_merges) }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Create multi-arch manifest
+        run: |
+          read -r -a sources <<< "${{ join(matrix.sources, ' ') }}"
+          tags="${{ join(matrix.tags, ',') }}"
+          lines="$(scripts/merge-manifests.sh "${{ matrix.repository }}" "${tags}" "${sources[@]}")"
+
+          {
+            echo "### ${{ matrix.runtime }} ${{ matrix.version }} (Ubuntu ${{ matrix.ubuntu }}, multi-arch)"
             echo ""
             echo "| Tag | Digest |"
             echo "|---|---|"
