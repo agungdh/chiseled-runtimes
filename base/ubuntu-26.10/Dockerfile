@@ -1,8 +1,10 @@
 # syntax=docker/dockerfile:1
 
-# Minimal, chiselled Ubuntu 26.10 base for JVM runtimes.
-# Only the files required by a (headless) JVM are shipped; there is no shell
-# and no package manager in the final image.
+# Minimal, chiselled Ubuntu 26.10 base shared by all runtimes.
+# Only runtime-agnostic files are shipped here; there is no shell and no
+# package manager in the final image. Runtime-specific packages are added by
+# each runtime image (for example fonts/zlib for Java, env/libatomic/libstdc++
+# for Node.js).
 FROM ubuntu:26.10 AS builder
 
 ARG TARGETARCH
@@ -24,9 +26,9 @@ RUN filename="chisel_${CHISEL_VERSION}_linux_${TARGETARCH}.tar.gz" \
     && tar -xzf "${filename}" -C /usr/local/bin chisel \
     && chisel version
 
-# Cut a minimal root filesystem. Slices cover the JVM itself (glibc + C.UTF-8
-# locale, libgcc, libstdc++, zlib), font support for AWT/PDF workloads, CA
-# certificates and timezone data.
+# Cut a minimal root filesystem. Slices cover only runtime-agnostic files:
+# glibc + C.UTF-8 locale, CA certificates and timezone data. Compiler runtimes
+# (libgcc, libstdc++) are added by the images that actually link against them.
 RUN mkdir -p /rootfs \
     && chisel cut --release ubuntu-26.10 --root /rootfs \
         base-files_base \
@@ -35,18 +37,12 @@ RUN mkdir -p /rootfs \
         ca-certificates_data \
         libc6_libs \
         libc-bin_locale \
-        libgcc-s1_libs \
-        libstdc++6_libs \
-        zlib1g_libs \
-        libfreetype6_libs \
-        libfontconfig1_libs \
-        fontconfig-config_config \
         tzdata_zoneinfo
 
 # Non-root runtime user (uid/gid 10001), a writable /app and /tmp, and a
 # minimal nsswitch.conf so glibc resolves hosts without warnings.
 RUN printf '%s\n' \
-        'app:x:10001:10001:Liberica runtime:/app:/sbin/nologin' \
+        'app:x:10001:10001:runtime:/app:/sbin/nologin' \
         >> /rootfs/etc/passwd \
     && printf '%s\n' 'app:x:10001:' >> /rootfs/etc/group \
     && install -d -m 0755 -o 10001 -g 10001 /rootfs/app \
@@ -67,6 +63,6 @@ ENV LANG=C.UTF-8 \
     PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 
 LABEL org.opencontainers.image.title="chiseled-runtimes base (Ubuntu 26.10)" \
-      org.opencontainers.image.description="Minimal chiselled Ubuntu 26.10 base image for JVM runtimes" \
+      org.opencontainers.image.description="Minimal chiselled Ubuntu 26.10 base image shared by all runtimes" \
       org.opencontainers.image.source="https://github.com/agungdh/chiseled-runtimes" \
       org.opencontainers.image.licenses="MIT"

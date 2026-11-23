@@ -48,8 +48,8 @@ Karakteristik image Node.js:
 - Multi-arch: Docker otomatis memilih `amd64` atau `arm64` sesuai host.
 - Berisi binary resmi Node.js (`node`, `npm`, `npx`, dan `corepack` bila tersedia
   di rilis tersebut). Header dan dokumentasi sudah dibuang.
-- Membawa `/usr/bin/env` dan `libatomic` sendiri, jadi base image tetap bersih
-  dari dependensi khusus Node.js.
+- Membawa `/usr/bin/env`, `libatomic`, `libstdc++`, dan `libgcc_s` sendiri;
+  base image tetap bersih dari dependensi khusus runtime mana pun.
 - Berjalan sebagai user non-root `app` (uid/gid `10001`), `WORKDIR /app`,
   `HOME=/app`.
 - `NODE_VERSION` di-set, `PATH` sudah menunjuk ke `node`/`npm`/`npx`.
@@ -57,6 +57,19 @@ Karakteristik image Node.js:
   harus di-install di stage builder (lihat contoh di bawah).
 - Sudah termasuk CA certificates dan timezone data (`TZ=UTC`).
 - Tidak punya `ENTRYPOINT`/`CMD` default, jadi bebas dipakai untuk aplikasi apa pun.
+
+Pemisahan dependensi runtime:
+
+- `base/ubuntu-*` hanya berisi dependensi umum: glibc + locale, CA
+  certificates, dan timezone data. Tidak ada library compiler di sini.
+- Image Java menambahkan `zlib1g`, `libfreetype6`, `libfontconfig1`, dan
+  `fontconfig-config` (termasuk font DejaVu). Java 8 juga menambahkan
+  `libgcc-s1` karena binary-nya menautkan `libgcc_s`.
+- Image Node.js menambahkan `/usr/bin/env`, `libatomic`, `libstdc++`, dan
+  `libgcc_s` di Dockerfile Node.js masing-masing.
+- Jadi image Java tidak membawa dependensi Node.js, dan image Node.js tidak
+  membawa font/zlib milik Java. Base image juga tetap bebas dari library
+  compiler yang hanya dipakai salah satu runtime.
 
 ## Pemakaian
 
