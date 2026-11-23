@@ -103,6 +103,7 @@ jobs:
         run: >-
           docker build
           --platform "${{ matrix.platform }}"
+          --build-arg "TARGETARCH=${{ matrix.arch }}"
           --label "org.opencontainers.image.revision=${REVISION}"
           --label "org.opencontainers.image.created=${CREATED}"
           --tag "${{ matrix.image }}"
@@ -199,6 +200,7 @@ jobs:
           build_base() {
             docker build \
               --platform "${{ matrix.platform }}" \
+              --build-arg "TARGETARCH=${{ matrix.arch }}" \
               --label "org.opencontainers.image.revision=${REVISION}" \
               --label "org.opencontainers.image.created=${CREATED}" \
               --tag "${{ matrix.base_image }}" \
@@ -216,6 +218,7 @@ jobs:
         run: >-
           docker build
           --platform "${{ matrix.platform }}"
+          --build-arg "TARGETARCH=${{ matrix.arch }}"
           --build-arg "BASE_IMAGE=${{ matrix.base_image }}"
           --label "org.opencontainers.image.revision=${REVISION}"
           --label "org.opencontainers.image.created=${CREATED}"

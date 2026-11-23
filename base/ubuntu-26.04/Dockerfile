@@ -5,7 +5,7 @@
 # and no package manager in the final image.
 FROM ubuntu:26.04 AS builder
 
-ARG TARGETARCH=amd64
+ARG TARGETARCH
 ARG CHISEL_VERSION=v1.5.1
 
 SHELL ["/bin/bash", "-euxo", "pipefail", "-c"]

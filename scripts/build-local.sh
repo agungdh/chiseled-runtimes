@@ -129,6 +129,7 @@ build_base_arch() {
   printf '==> Building %s (%s, linux/%s)\n' "${ref}" "${dir}" "${arch}"
   docker build \
     --platform "linux/${arch}" \
+    --build-arg "TARGETARCH=${arch}" \
     --label "org.opencontainers.image.revision=${REVISION}" \
     --label "org.opencontainers.image.created=${CREATED}" \
     --tag "${ref}" \
@@ -182,6 +183,7 @@ build_runtime() {
     printf '==> Building %s (%s, linux/%s)\n' "${ref}" "${dir}" "${arch}"
     docker build \
       --platform "linux/${arch}" \
+      --build-arg "TARGETARCH=${arch}" \
       --build-arg "BASE_IMAGE=${base_ref}" \
       --label "org.opencontainers.image.revision=${REVISION}" \
       --label "org.opencontainers.image.created=${CREATED}" \
