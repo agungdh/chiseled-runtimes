@@ -11,6 +11,7 @@ Runtime lain (`nodejs`, `php`, dst.) menyusul dengan pola yang sama.
 
 | Image | Java | Base | Keterangan |
 |---|---|---|---|
+| `ghcr.io/agungdh/chiseled-runtimes/java:21-ubuntu26.04` | Liberica JRE 21 | Ubuntu 26.04 | LTS, juga tersedia sebagai `:21` |
 | `ghcr.io/agungdh/chiseled-runtimes/java:25-ubuntu26.04` | Liberica JRE 25 | Ubuntu 26.04 | LTS, juga tersedia sebagai `:25` dan `:latest` |
 | `ghcr.io/agungdh/chiseled-runtimes/java:27-ubuntu26.10` | Liberica JRE 27 | Ubuntu 26.10 | juga tersedia sebagai `:27` |
 | `ghcr.io/agungdh/chiseled-runtimes/base:ubuntu-26.04` | - | Ubuntu 26.04 | base image tanpa Java |
@@ -62,6 +63,8 @@ Setiap image punya dua jenis tag:
 
 | Tag | Isi |
 |---|---|
+| `java:21-ubuntu26.04` | Java 21 terbaru di Ubuntu 26.04 (target spesifik) |
+| `java:21` | Java 21 terbaru (lintas base, saat ini Ubuntu 26.04) |
 | `java:25-ubuntu26.04` | Java 25 terbaru di Ubuntu 26.04 (target spesifik) |
 | `java:25` | Java 25 terbaru (lintas base, saat ini Ubuntu 26.04) |
 | `java:latest` | target yang terdaftar di `LATEST_TARGETS` (saat ini Java 25) |
@@ -120,6 +123,9 @@ Bisa juga build target tertentu saja. Dependency base akan dibangun otomatis:
 # hanya Java 27 (base 26.10 dibangun sebagai dependency)
 ./scripts/build-local.sh java/27-ubuntu26.10
 
+# hanya Java 21 (base 26.04 dibangun sebagai dependency)
+./scripts/build-local.sh java/21-ubuntu26.04
+
 # hanya base 26.10
 ./scripts/build-local.sh base/ubuntu-26.10
 
@@ -147,6 +153,7 @@ docker build \
 │   ├── ubuntu-26.04/Dockerfile       # chiselled base (chisel -> scratch)
 │   └── ubuntu-26.10/Dockerfile
 ├── java/
+│   ├── 21-ubuntu26.04/Dockerfile     # Liberica JRE 21
 │   ├── 25-ubuntu26.04/Dockerfile     # Liberica JRE 25
 │   └── 27-ubuntu26.10/Dockerfile     # Liberica JRE 27
 ├── scripts/
@@ -165,8 +172,9 @@ menemukan target, lalu hanya membangun yang terpengaruh:
 
 - Ubah `java/27-ubuntu26.10/**` → hanya Java 27 yang dibangun.
 - Ubah `java/25-ubuntu26.04/**` → hanya Java 25 yang dibangun.
+- Ubah `java/21-ubuntu26.04/**` → hanya Java 21 yang dibangun.
 - Ubah `base/ubuntu-26.04/**` → base 26.04 + semua runtime yang memakainya
-  (saat ini Java 25).
+  (saat ini Java 21 dan Java 25).
 - Ubah `.github/**` atau `workflow_dispatch` → semua target dibangun.
 - Ubah `README.md` / `scripts/**` → tidak ada image yang dibangun.
 
