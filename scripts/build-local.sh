@@ -20,7 +20,7 @@ set -euo pipefail
 #   PLATFORM        legacy single-platform override (used when PLATFORMS is unset)
 #   PUSH            push images after a successful build (default: false)
 #   LATEST_TARGETS  space-separated targets that also get :latest
-#                   (default: java/25-ubuntu26.04)
+#                   (default: java/25-ubuntu26.04 nodejs/26-ubuntu26.04)
 #   REVISION        git revision recorded in labels/tags (default: current HEAD)
 #
 # With PUSH=true each architecture is pushed under <tag>-<arch> and then merged
@@ -32,7 +32,7 @@ OWNER="${OWNER:-agungdh}"
 REPO="${REPO:-chiseled-runtimes}"
 PLATFORMS="${PLATFORMS:-${PLATFORM:-linux/amd64}}"
 PUSH="${PUSH:-false}"
-LATEST_TARGETS="${LATEST_TARGETS:-java/25-ubuntu26.04}"
+LATEST_TARGETS="${LATEST_TARGETS:-java/25-ubuntu26.04 nodejs/26-ubuntu26.04}"
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "${ROOT_DIR}"

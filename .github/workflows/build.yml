@@ -23,7 +23,7 @@ env:
   REGISTRY: ghcr.io
   IMAGE_NAMESPACE: ${{ github.repository_owner }}/chiseled-runtimes
   # Space-separated target directories that also get the :latest tag.
-  LATEST_TARGETS: "java/25-ubuntu26.04"
+  LATEST_TARGETS: "java/25-ubuntu26.04 nodejs/26-ubuntu26.04"
   # Native runners per architecture. There is no QEMU emulation: every
   # per-arch image is built on a runner of that architecture and the results
   # are merged into a multi-arch manifest afterwards.
