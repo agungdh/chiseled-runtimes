@@ -58,7 +58,6 @@ COPY --from=builder /rootfs/ /
 
 ENV LANG=C.UTF-8 \
     LC_ALL=C.UTF-8 \
-    RAKAWIK=SURIMBIM \
     TZ=UTC \
     PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 
