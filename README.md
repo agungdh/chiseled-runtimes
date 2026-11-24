@@ -7,7 +7,8 @@ dari Canonical.
 Saat ini tersedia dua runtime:
 
 - **Java** dengan distribusi **[BellSoft Liberica](https://bell-sw.com/liberica-jdk/)**.
-- **Node.js** dengan binary resmi dari [nodejs.org](https://nodejs.org/), hanya versi LTS.
+- **Node.js** dengan binary resmi dari [nodejs.org](https://nodejs.org/): versi
+  LTS di Ubuntu 26.04, plus versi non-LTS (Node.js 25) di Ubuntu 26.10.
 
 Image disusun tiga lapis: **common base** (`base/ubuntu-*`) → **language base**
 (`base/java-ubuntu-*`, `base/nodejs-ubuntu-*`) → **runtime image**
@@ -33,10 +34,12 @@ manifest multi-arch dengan tag yang sama.
 | `ghcr.io/agungdh/chiseled-runtimes/nodejs:20-ubuntu26.04` | Node.js 20 | Ubuntu 26.04 | amd64, arm64 | LTS (EOL), juga tersedia sebagai `:20` |
 | `ghcr.io/agungdh/chiseled-runtimes/nodejs:22-ubuntu26.04` | Node.js 22 | Ubuntu 26.04 | amd64, arm64 | LTS, juga tersedia sebagai `:22` |
 | `ghcr.io/agungdh/chiseled-runtimes/nodejs:24-ubuntu26.04` | Node.js 24 | Ubuntu 26.04 | amd64, arm64 | LTS, juga tersedia sebagai `:24` |
+| `ghcr.io/agungdh/chiseled-runtimes/nodejs:25-ubuntu26.10` | Node.js 25 | Ubuntu 26.10 | amd64, arm64 | non-LTS (EOL), juga tersedia sebagai `:25` |
 | `ghcr.io/agungdh/chiseled-runtimes/nodejs:26-ubuntu26.04` | Node.js 26 | Ubuntu 26.04 | amd64, arm64 | LTS, juga tersedia sebagai `:26` dan `:latest` |
 | `ghcr.io/agungdh/chiseled-runtimes/base:java-ubuntu-26.04` | Java base | Ubuntu 26.04 | amd64, arm64 | font + zlib untuk Java 8–25 |
 | `ghcr.io/agungdh/chiseled-runtimes/base:java-ubuntu-26.10` | Java base | Ubuntu 26.10 | amd64, arm64 | font + zlib untuk Java 27 |
-| `ghcr.io/agungdh/chiseled-runtimes/base:nodejs-ubuntu-26.04` | Node.js base | Ubuntu 26.04 | amd64, arm64 | env + libstdc++ + libgcc untuk Node.js 18–26 |
+| `ghcr.io/agungdh/chiseled-runtimes/base:nodejs-ubuntu-26.04` | Node.js base | Ubuntu 26.04 | amd64, arm64 | env + libstdc++ + libgcc untuk Node.js LTS |
+| `ghcr.io/agungdh/chiseled-runtimes/base:nodejs-ubuntu-26.10` | Node.js base | Ubuntu 26.10 | amd64, arm64 | env + libstdc++ + libgcc untuk Node.js 25 |
 | `ghcr.io/agungdh/chiseled-runtimes/base:ubuntu-26.04` | - | Ubuntu 26.04 | amd64, arm64 | common base tanpa runtime |
 | `ghcr.io/agungdh/chiseled-runtimes/base:ubuntu-26.10` | - | Ubuntu 26.10 | amd64, arm64 | common base tanpa runtime |
 
@@ -57,9 +60,10 @@ Karakteristik image Node.js:
 - Multi-arch: Docker otomatis memilih `amd64` atau `arm64` sesuai host.
 - Berisi binary resmi Node.js (`node`, `npm`, `npx`, dan `corepack` bila tersedia
   di rilis tersebut). Header dan dokumentasi sudah dibuang.
-- `/usr/bin/env`, `libstdc++`, dan `libgcc_s` disediakan oleh
-  `base:nodejs-ubuntu-26.04`. `libatomic` hanya ditambahkan oleh Node.js 26,
-  satu-satunya versi yang menautkannya.
+- `/usr/bin/env`, `libstdc++`, dan `libgcc_s` disediakan oleh language base
+  Node.js (`base:nodejs-ubuntu-26.04` untuk LTS, `base:nodejs-ubuntu-26.10`
+  untuk Node.js 25). `libatomic` hanya ditambahkan oleh Node.js 25 dan 26,
+  dua versi yang menautkannya.
 - Berjalan sebagai user non-root `app` (uid/gid `10001`), `WORKDIR /app`,
   `HOME=/app`.
 - `NODE_VERSION` di-set, `PATH` sudah menunjuk ke `node`/`npm`/`npx`.
@@ -78,9 +82,10 @@ Pemisahan dependensi runtime:
   `libfontconfig1`, dan font DejaVu. zlib ikut terbawa sebagai dependensi
   freetype, jadi semua versi Java memakainya. Java 8 menambahkan `libgcc_s`
   sendiri karena hanya versi itu yang menautkannya.
-- `base/nodejs-ubuntu-26.04` adalah **Node.js base**: menambahkan
-  `/usr/bin/env`, `libstdc++`, dan `libgcc_s`. Node.js 26 menambahkan
-  `libatomic` sendiri karena hanya versi itu yang menautkannya.
+- `base/nodejs-ubuntu-26.04` (LTS) dan `base/nodejs-ubuntu-26.10` (non-LTS)
+  adalah **Node.js base**: menambahkan `/usr/bin/env`, `libstdc++`, dan
+  `libgcc_s`. Node.js 25 dan 26 menambahkan `libatomic` sendiri karena hanya
+  kedua versi itu yang menautkannya.
 - Jadi image Java tidak membawa dependensi Node.js, image Node.js tidak
   membawa font/zlib milik Java, dan tidak ada versi yang membawa library yang
   tidak dipakainya.
@@ -181,12 +186,15 @@ Setiap image punya dua jenis tag:
 | `nodejs:22` | Node.js 22 terbaru (lintas base, saat ini Ubuntu 26.04, multi-arch) |
 | `nodejs:24-ubuntu26.04` | Node.js 24 terbaru di Ubuntu 26.04 (target spesifik, multi-arch) |
 | `nodejs:24` | Node.js 24 terbaru (lintas base, saat ini Ubuntu 26.04, multi-arch) |
+| `nodejs:25-ubuntu26.10` | Node.js 25 terbaru di Ubuntu 26.10 (target spesifik, multi-arch) |
+| `nodejs:25` | Node.js 25 terbaru (lintas base, saat ini Ubuntu 26.10, multi-arch) |
 | `nodejs:26-ubuntu26.04` | Node.js 26 terbaru di Ubuntu 26.04 (target spesifik, multi-arch) |
 | `nodejs:26` | Node.js 26 terbaru (lintas base, saat ini Ubuntu 26.04, multi-arch) |
 | `nodejs:latest` | target yang terdaftar di `LATEST_TARGETS` (saat ini Node.js 26, multi-arch) |
 | `base:java-ubuntu-26.04` | Java base terbaru di Ubuntu 26.04 (multi-arch) |
 | `base:java-ubuntu-26.10` | Java base terbaru di Ubuntu 26.10 (multi-arch) |
 | `base:nodejs-ubuntu-26.04` | Node.js base terbaru di Ubuntu 26.04 (multi-arch) |
+| `base:nodejs-ubuntu-26.10` | Node.js base terbaru di Ubuntu 26.10 (multi-arch) |
 | `base:ubuntu-26.04` | common base Ubuntu 26.04 terbaru (multi-arch) |
 | `base:ubuntu-26.10` | common base Ubuntu 26.10 terbaru (multi-arch) |
 
@@ -195,14 +203,20 @@ Setiap architecture tetap bisa di-pin secara eksplisit kalau dibutuhkan:
 ```
 java:25-ubuntu26.04-amd64
 java:25-ubuntu26.04-arm64
+nodejs:25-ubuntu26.10-amd64
+nodejs:25-ubuntu26.10-arm64
 nodejs:26-ubuntu26.04-amd64
 nodejs:26-ubuntu26.04-arm64
 base:java-ubuntu-26.04-amd64
 base:java-ubuntu-26.04-arm64
 base:nodejs-ubuntu-26.04-amd64
 base:nodejs-ubuntu-26.04-arm64
+base:nodejs-ubuntu-26.10-amd64
+base:nodejs-ubuntu-26.10-arm64
 base:ubuntu-26.04-amd64
 base:ubuntu-26.04-arm64
+base:ubuntu-26.10-amd64
+base:ubuntu-26.10-arm64
 ```
 
 Tag channel seperti `java:25`, `nodejs:26`, dan `:latest` adalah manifest list
@@ -220,7 +234,9 @@ nodejs:26-ubuntu26.04-<sha git penuh>-<YYYYMMDDHHMMSS>-amd64
 nodejs:26-ubuntu26.04-<sha git penuh>-<YYYYMMDDHHMMSS>-arm64
 base:java-ubuntu-26.04-<sha git penuh>-<YYYYMMDDHHMMSS>
 base:nodejs-ubuntu-26.04-<sha git penuh>-<YYYYMMDDHHMMSS>
+base:nodejs-ubuntu-26.10-<sha git penuh>-<YYYYMMDDHHMMSS>
 base:ubuntu-26.04-<sha git penuh>-<YYYYMMDDHHMMSS>
+base:ubuntu-26.10-<sha git penuh>-<YYYYMMDDHHMMSS>
 ```
 
 SHA-nya sengaja penuh (40 karakter) supaya tidak ambigu; build stamp membuat
@@ -285,6 +301,9 @@ Bisa juga build target tertentu saja. Dependency base akan dibangun otomatis
 # hanya Node.js 26 (common 26.04 + Node.js base dibangun sebagai dependency)
 ./scripts/build-local.sh nodejs/26-ubuntu26.04
 
+# hanya Node.js 25 (common 26.10 + Node.js base 26.10 dibangun sebagai dependency)
+./scripts/build-local.sh nodejs/25-ubuntu26.10
+
 # hanya common base 26.10
 ./scripts/build-local.sh base/ubuntu-26.10
 
@@ -314,6 +333,11 @@ docker build \
   --build-arg BASE_IMAGE=ghcr.io/agungdh/chiseled-runtimes/base:nodejs-ubuntu-26.04 \
   -t ghcr.io/agungdh/chiseled-runtimes/nodejs:26-ubuntu26.04 \
   nodejs/26-ubuntu26.04
+
+docker build \
+  --build-arg BASE_IMAGE=ghcr.io/agungdh/chiseled-runtimes/base:nodejs-ubuntu-26.10 \
+  -t ghcr.io/agungdh/chiseled-runtimes/nodejs:25-ubuntu26.10 \
+  nodejs/25-ubuntu26.10
 ```
 
 ## Struktur
@@ -326,7 +350,8 @@ docker build \
 │   ├── ubuntu-26.10/Dockerfile
 │   ├── java-ubuntu-26.04/Dockerfile    # Java base (font + zlib)
 │   ├── java-ubuntu-26.10/Dockerfile
-│   └── nodejs-ubuntu-26.04/Dockerfile  # Node.js base (env + libstdc++ + libgcc)
+│   ├── nodejs-ubuntu-26.04/Dockerfile  # Node.js base LTS (env + libstdc++ + libgcc)
+│   └── nodejs-ubuntu-26.10/Dockerfile  # Node.js base non-LTS
 ├── java/
 │   ├── 8-ubuntu26.04/Dockerfile      # Liberica JRE 8
 │   ├── 11-ubuntu26.04/Dockerfile     # Liberica JRE 11
@@ -339,6 +364,7 @@ docker build \
 │   ├── 20-ubuntu26.04/Dockerfile     # Node.js 20 LTS
 │   ├── 22-ubuntu26.04/Dockerfile     # Node.js 22 LTS
 │   ├── 24-ubuntu26.04/Dockerfile     # Node.js 24 LTS
+│   ├── 25-ubuntu26.10/Dockerfile     # Node.js 25 (non-LTS)
 │   └── 26-ubuntu26.04/Dockerfile     # Node.js 26 LTS
 ├── scripts/
 │   ├── build-local.sh
@@ -375,6 +401,7 @@ Target yang dibangun tetap selektif:
 - Ubah `java/17-ubuntu26.04/**` → hanya Java 17 yang dibangun.
 - Ubah `java/11-ubuntu26.04/**` → hanya Java 11 yang dibangun.
 - Ubah `java/8-ubuntu26.04/**` → hanya Java 8 yang dibangun.
+- Ubah `nodejs/25-ubuntu26.10/**` → hanya Node.js 25 yang dibangun.
 - Ubah `nodejs/26-ubuntu26.04/**` → hanya Node.js 26 yang dibangun.
 - Ubah `nodejs/24-ubuntu26.04/**` → hanya Node.js 24 yang dibangun.
 - Ubah `nodejs/22-ubuntu26.04/**` → hanya Node.js 22 yang dibangun.
@@ -382,11 +409,14 @@ Target yang dibangun tetap selektif:
 - Ubah `nodejs/18-ubuntu26.04/**` → hanya Node.js 18 yang dibangun.
 - Ubah `base/java-ubuntu-26.04/**` → Java base 26.04 + Java 8, 11, 17, 21, 25.
 - Ubah `base/java-ubuntu-26.10/**` → Java base 26.10 + Java 27.
-- Ubah `base/nodejs-ubuntu-26.04/**` → Node.js base + Node.js 18, 20, 22, 24, 26.
+- Ubah `base/nodejs-ubuntu-26.04/**` → Node.js base 26.04 + Node.js 18, 20,
+  22, 24, 26.
+- Ubah `base/nodejs-ubuntu-26.10/**` → Node.js base 26.10 + Node.js 25.
 - Ubah `base/ubuntu-26.04/**` → common base 26.04 + language base 26.04 +
   semua runtime di rilis itu (Java 8, 11, 17, 21, 25 dan Node.js 18, 20, 22,
   24, 26), untuk kedua architecture.
-- Ubah `base/ubuntu-26.10/**` → common base 26.10 + Java base 26.10 + Java 27.
+- Ubah `base/ubuntu-26.10/**` → common base 26.10 + Java base 26.10 + Java 27
+  + Node.js base 26.10 + Node.js 25.
 - Ubah `.github/**` atau `workflow_dispatch` → semua target dibangun.
 - Ubah `README.md` / `scripts/**` → tidak ada image yang dibangun.
 
@@ -436,13 +466,15 @@ release BellSoft.
 ### Node.js
 
 Versi dan checksum Node.js di-pin di masing-masing `nodejs/*/Dockerfile`
-(`NODE_VERSION`, `NODE_SHA256_AMD64`, dan `NODE_SHA256_ARM64`). Hanya versi LTS
-(genap) yang disediakan; versi ganjil seperti 19, 21, 23, dan 25 sengaja tidak
-dibuat. Node.js 18 dan 20 sudah EOL, tetapi image-nya tetap dibangun selama
-folder target masih ada. Untuk upgrade:
+(`NODE_VERSION`, `NODE_SHA256_AMD64`, dan `NODE_SHA256_ARM64`). Versi LTS
+(genap) memakai Ubuntu 26.04. Versi non-LTS (ganjil) memakai Ubuntu 26.10,
+rilis Ubuntu terbaru; saat ini hanya Node.js 25 yang tersedia. Node.js 18, 20,
+dan 25 sudah EOL, tetapi image-nya tetap dibangun selama folder target masih
+ada. Untuk upgrade:
 
-1. Ambil versi LTS terbaru dari `https://nodejs.org/dist/index.json`
-   (entri dengan field `lts` bukan `false`).
+1. Ambil versi terbaru dari `https://nodejs.org/dist/index.json`. Untuk LTS,
+   pilih entri dengan field `lts` bukan `false`; untuk non-LTS (misalnya 25),
+   pilih versi terbaru dengan major tersebut.
 2. Download tarball resmi untuk kedua architecture:
    `node-v<VERSION>-linux-x64.tar.xz` dan
    `node-v<VERSION>-linux-arm64.tar.xz`.
