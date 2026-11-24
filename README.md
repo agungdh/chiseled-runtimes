@@ -38,7 +38,7 @@ manifest multi-arch dengan tag yang sama.
 | `ghcr.io/agungdh/chiseled-runtimes/nodejs:26-ubuntu26.04` | Node.js 26 | Ubuntu 26.04 | amd64, arm64 | LTS, juga tersedia sebagai `:26` dan `:latest` |
 | `ghcr.io/agungdh/chiseled-runtimes/base:java-ubuntu-26.04` | Java base | Ubuntu 26.04 | amd64, arm64 | font + zlib untuk Java 8–25 |
 | `ghcr.io/agungdh/chiseled-runtimes/base:java-ubuntu-26.10` | Java base | Ubuntu 26.10 | amd64, arm64 | font + zlib untuk Java 27 |
-| `ghcr.io/agungdh/chiseled-runtimes/base:nodejs-ubuntu-26.04` | Node.js base | Ubuntu 26.04 | amd64, arm64 | env + libstdc++ + libgcc untuk Node.js LTS |
+| `ghcr.io/agungdh/chiseled-runtimes/base:nodejs-ubuntu-26.04` | Node.js base | Ubuntu 26.04 | amd64, arm64 | env + libstdc++ + libgcc untuk Node.js 18, 20, 22, 24, 26 |
 | `ghcr.io/agungdh/chiseled-runtimes/base:nodejs-ubuntu-26.10` | Node.js base | Ubuntu 26.10 | amd64, arm64 | env + libstdc++ + libgcc untuk Node.js 25 |
 | `ghcr.io/agungdh/chiseled-runtimes/base:ubuntu-26.04` | - | Ubuntu 26.04 | amd64, arm64 | common base tanpa runtime |
 | `ghcr.io/agungdh/chiseled-runtimes/base:ubuntu-26.10` | - | Ubuntu 26.10 | amd64, arm64 | common base tanpa runtime |
@@ -106,6 +106,55 @@ COPY --from=extra /usr/share/zoneinfo /usr/share/zoneinfo
 ```
 
 Java dan Node.js sendiri tidak membutuhkannya: keduanya memakai store bawaan.
+
+## Cara kerja base
+
+Language base tidak menyalin isi common base langsung ke image final. Polanya:
+
+1. `FROM ${COMMON_BASE_IMAGE} AS common` — common base dipakai sebagai seed.
+2. `FROM ubuntu:<rilis> AS builder` — stage dengan apt + chisel.
+3. `COPY --from=common / /rootfs` — isi common base masuk ke rootfs.
+4. `chisel cut --release ubuntu-<rilis> --root /rootfs <slice...>` — slice
+   khusus bahasa ditambahkan; chisel menimpa file yang sudah ada sehingga
+   tidak ada duplikat.
+5. `FROM scratch` + `COPY --from=builder /rootfs/ /` — image final hanya
+   berisi rootfs hasil cut, tanpa apt/chisel.
+6. `ENV` (`LANG`, `LC_ALL`, `TZ`, `PATH`) dideklarasikan ulang karena
+   `FROM scratch` tidak mewarisi ENV dari common base.
+
+Jangan menyalin `/out/` dari hasil `chisel cut` langsung ke image final tanpa
+seed common base: slice seperti `libc6_libs` akan menduplikasi glibc.
+
+Dependency yang hanya dipakai sebagian versi ditambahkan di Dockerfile versi
+tersebut lewat stage `extra`, bukan di language base:
+
+| Versi | Tambahan | Alasan |
+|---|---|---|
+| Java 8 | `libgcc_s.so.1` | hanya Java 8 yang menautkannya |
+| Java 11/17/21/25/27 | - | sudah tercakup Java base |
+| Node.js 18/20/22/24 | - | sudah tercakup Node.js base |
+| Node.js 25/26 | `libatomic.so.1` | hanya kedua versi itu yang menautkannya |
+
+Stage builder `node`/`jre` juga perlu library tersebut untuk menjalankan
+`node --version` / `java -version`. Karena itu `libatomic1` di-install di
+stage builder Node 25/26; yang disalin ke image final tetap hanya file `.so`
+dari stage `extra`.
+
+Checklist menambah versi/runtime:
+
+1. Buat `<runtime>/<versi>-ubuntu<rilis>/Dockerfile` dengan
+   `ARG BASE_IMAGE=.../base:<runtime>-ubuntu-<rilis>`.
+2. Taruh dependency yang dipakai semua versi di
+   `base/<runtime>-ubuntu-<rilis>/Dockerfile`; dependency khusus versi di
+   stage `extra` Dockerfile versi tersebut.
+3. Untuk runtime baru, buat language base-nya (pola seed → chisel → scratch)
+   dan `scripts/smoke/<runtime>.sh`.
+4. Update tabel image/tag/struktur di README dan `LATEST_TARGETS` bila perlu.
+
+Semua Dockerfile menerima `--build-arg TARGETARCH=amd64|arm64` untuk memilih
+binary chisel, Node.js, dan Liberica. CI dan `scripts/build-local.sh` selalu
+mengirimkannya. Sebelum menambah slice/extra, cek dependency binary dengan
+`readelf -d <binary> | grep NEEDED`.
 
 ## Pemakaian
 
@@ -433,6 +482,13 @@ argumen) supaya ikut di-smoke test. Tag `<versi>` (misalnya `:8.6`, `:3.14`)
 dibuat otomatis; tag `:latest` hanya untuk target yang terdaftar di
 `LATEST_TARGETS` pada workflow.
 
+Action di workflow sengaja di-pin ke **major terbaru** (`actions/checkout@v7`,
+`docker/login-action@v4`) supaya tidak memicu warning deprecated dari runtime
+Node.js bawaan GitHub Actions. Saat GitHub mengumumkan deprecation baru, cek
+rilis terbaru masing-masing action dan naikkan major-nya di
+`.github/workflows/build.yml`; tidak ada action lain yang dipakai (build Docker
+dan `buildx imagetools` memakai tool bawaan runner).
+
 Kalau base belum ada di registry (PR, build pertama, atau package hilang), CI
 membangun common base lalu language base secara lokal di runner dengan
 architecture yang sesuai sebelum membangun runtime-nya. Di push ke `main`,
@@ -495,8 +551,11 @@ Kalau nanti butuh jauh lebih kecil, opsinya adalah membuat runtime custom dengan
 di stage builder.
 
 Image Node.js sekitar 250 MB (uncompressed) karena binary resmi Node.js sendiri
-sekitar 145 MB. Header dan dokumentasi sudah dibuang dari tarball; `npm` tetap
-disertakan supaya image bisa dipakai untuk menjalankan aplikasi dan tooling.
+sekitar 145 MB. Dari tarball resmi, yang dibuang adalah `include/`, `share/`
+(man page, gdb helper, systemtap), `CHANGELOG.md`, `README.md`, serta
+`lib/node_modules/npm/docs` dan `lib/node_modules/npm/man`. `npm` tetap
+disertakan supaya image bisa dipakai untuk menjalankan aplikasi dan tooling;
+file `LICENSE` Node.js dan npm tidak dihapus.
 
 ## Lisensi
 
