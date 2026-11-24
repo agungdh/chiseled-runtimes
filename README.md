@@ -4,16 +4,18 @@ Image container "chiselled" (minimal, tanpa shell) untuk berbagai runtime, diban
 di atas [Ubuntu](https://ubuntu.com/) + [chisel](https://github.com/canonical/chisel)
 dari Canonical.
 
-Saat ini tersedia dua runtime:
+Saat ini tersedia tiga runtime:
 
 - **Java** dengan distribusi **[BellSoft Liberica](https://bell-sw.com/liberica-jdk/)**.
 - **Node.js** dengan binary resmi dari [nodejs.org](https://nodejs.org/): versi
   LTS di Ubuntu 26.04, plus versi non-LTS (Node.js 25) di Ubuntu 26.10.
+- **Bun** dengan binary resmi dari [bun.sh](https://bun.sh/). Bun tidak punya
+  jalur non-LTS, jadi semua versinya memakai Ubuntu 26.04 LTS.
 
 Image disusun tiga lapis: **common base** (`base/ubuntu-*`) → **language base**
-(`base/java-ubuntu-*`, `base/nodejs-ubuntu-*`) → **runtime image**
-(`java/*`, `nodejs/*`). Setiap lapis hanya membawa file yang benar-benar
-dipakai bersama oleh lapis di atasnya.
+(`base/java-ubuntu-*`, `base/nodejs-ubuntu-*`, `base/bun-ubuntu-*`) → **runtime
+image** (`java/*`, `nodejs/*`, `bun/*`). Setiap lapis hanya membawa file yang
+benar-benar dipakai bersama oleh lapis di atasnya.
 
 Runtime lain (`php`, dst.) menyusul dengan pola yang sama.
 
@@ -36,10 +38,12 @@ manifest multi-arch dengan tag yang sama.
 | `ghcr.io/agungdh/chiseled-runtimes/nodejs:24-ubuntu26.04` | Node.js 24 | Ubuntu 26.04 | amd64, arm64 | LTS, juga tersedia sebagai `:24` |
 | `ghcr.io/agungdh/chiseled-runtimes/nodejs:25-ubuntu26.10` | Node.js 25 | Ubuntu 26.10 | amd64, arm64 | non-LTS (EOL), juga tersedia sebagai `:25` |
 | `ghcr.io/agungdh/chiseled-runtimes/nodejs:26-ubuntu26.04` | Node.js 26 | Ubuntu 26.04 | amd64, arm64 | LTS, juga tersedia sebagai `:26` dan `:latest` |
+| `ghcr.io/agungdh/chiseled-runtimes/bun:1-ubuntu26.04` | Bun 1 | Ubuntu 26.04 | amd64, arm64 | stabil, juga tersedia sebagai `:1` dan `:latest` |
 | `ghcr.io/agungdh/chiseled-runtimes/base:java-ubuntu-26.04` | Java base | Ubuntu 26.04 | amd64, arm64 | font + zlib untuk Java 8–25 |
 | `ghcr.io/agungdh/chiseled-runtimes/base:java-ubuntu-26.10` | Java base | Ubuntu 26.10 | amd64, arm64 | font + zlib untuk Java 27 |
 | `ghcr.io/agungdh/chiseled-runtimes/base:nodejs-ubuntu-26.04` | Node.js base | Ubuntu 26.04 | amd64, arm64 | env + libstdc++ + libgcc untuk Node.js 18, 20, 22, 24, 26 |
 | `ghcr.io/agungdh/chiseled-runtimes/base:nodejs-ubuntu-26.10` | Node.js base | Ubuntu 26.10 | amd64, arm64 | env + libstdc++ + libgcc untuk Node.js 25 |
+| `ghcr.io/agungdh/chiseled-runtimes/base:bun-ubuntu-26.04` | Bun base | Ubuntu 26.04 | amd64, arm64 | env untuk Bun |
 | `ghcr.io/agungdh/chiseled-runtimes/base:ubuntu-26.04` | - | Ubuntu 26.04 | amd64, arm64 | common base tanpa runtime |
 | `ghcr.io/agungdh/chiseled-runtimes/base:ubuntu-26.10` | - | Ubuntu 26.10 | amd64, arm64 | common base tanpa runtime |
 
@@ -78,6 +82,28 @@ Karakteristik image Node.js:
   dan data timezone (ICU) bawaannya.
 - Tidak punya `ENTRYPOINT`/`CMD` default, jadi bebas dipakai untuk aplikasi apa pun.
 
+Karakteristik image Bun:
+
+- Multi-arch: Docker otomatis memilih `amd64` atau `arm64` sesuai host.
+- Berisi binary resmi Bun tunggal, lengkap dengan package manager, bundler,
+  transpiler, dan test runner bawaan. `bunx` dipakai lewat `bun x`; tidak ada
+  binary terpisah.
+- Binary Bun hanya menautkan glibc (`libc`, `libpthread`, `libdl`, `libm`), jadi
+  seluruh dependency runtime-nya sudah tercakup common base. Bun base hanya
+  menambahkan `/usr/bin/env` supaya shebang `#!/usr/bin/env bun` tetap bekerja.
+  `libstdc++`, `libatomic`, dan `libgcc_s` tidak disertakan karena binary Bun
+  tidak membutuhkannya.
+- Berjalan sebagai user non-root `app` (uid/gid `10001`), `WORKDIR /app`,
+  `HOME=/app`.
+- `BUN_VERSION` di-set, `PATH` sudah menunjuk ke `bun`.
+- Tanpa shell, tanpa package manager (distroless-style). Dependency aplikasi
+  harus di-install di stage builder. `bun install` di image final tetap bisa
+  mengunduh package, tetapi lifecycle script yang memanggil `/bin/sh` tidak
+  akan berjalan.
+- CA certificates dan timezone data tidak disertakan; Bun memakai root CA dan
+  data timezone bawaannya.
+- Tidak punya `ENTRYPOINT`/`CMD` default, jadi bebas dipakai untuk aplikasi apa pun.
+
 Pemisahan dependensi runtime:
 
 - `base/ubuntu-*` adalah **common base**: glibc + locale `C.UTF-8`,
@@ -91,7 +117,9 @@ Pemisahan dependensi runtime:
   adalah **Node.js base**: menambahkan `/usr/bin/env`, `libstdc++`, dan
   `libgcc_s`. Node.js 25 dan 26 menambahkan `libatomic` sendiri karena hanya
   kedua versi itu yang menautkannya.
-- Jadi image Java tidak membawa dependensi Node.js, image Node.js tidak
+- `base/bun-ubuntu-26.04` adalah **Bun base**: hanya menambahkan
+  `/usr/bin/env`; glibc yang dibutuhkan Bun sudah ada di common base.
+- Jadi image Java tidak membawa dependensi Node.js/Bun, image Node.js/Bun tidak
   membawa font/zlib milik Java, dan tidak ada versi yang membawa library yang
   tidak dipakainya.
 
@@ -109,7 +137,8 @@ COPY --from=extra /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/
 COPY --from=extra /usr/share/zoneinfo /usr/share/zoneinfo
 ```
 
-Java dan Node.js sendiri tidak membutuhkannya: keduanya memakai store bawaan.
+Java, Node.js, dan Bun sendiri tidak membutuhkannya: ketiganya memakai store
+bawaan.
 
 ## Cara kerja base
 
@@ -138,11 +167,13 @@ tersebut lewat stage `extra`, bukan di language base:
 | Java 11/17/21/25/27 | - | sudah tercakup Java base |
 | Node.js 18/20/22/24 | - | sudah tercakup Node.js base |
 | Node.js 25/26 | `libatomic.so.1` | hanya kedua versi itu yang menautkannya |
+| Bun 1 | - | sudah tercakup Bun base + common base |
 
 Stage builder `node`/`jre` juga perlu library tersebut untuk menjalankan
 `node --version` / `java -version`. Karena itu `libatomic1` di-install di
 stage builder Node 25/26; yang disalin ke image final tetap hanya file `.so`
-dari stage `extra`.
+dari stage `extra`. Stage builder `bun` tidak butuh tambahan karena binary Bun
+hanya menautkan glibc.
 
 Checklist menambah versi/runtime:
 
@@ -156,9 +187,9 @@ Checklist menambah versi/runtime:
 4. Update tabel image/tag/struktur di README dan `LATEST_TARGETS` bila perlu.
 
 Semua Dockerfile menerima `--build-arg TARGETARCH=amd64|arm64` untuk memilih
-binary chisel, Node.js, dan Liberica. CI dan `scripts/build-local.sh` selalu
-mengirimkannya. Sebelum menambah slice/extra, cek dependency binary dengan
-`readelf -d <binary> | grep NEEDED`.
+binary chisel, Node.js, Bun, dan Liberica. CI dan `scripts/build-local.sh`
+selalu mengirimkannya. Sebelum menambah slice/extra, cek dependency binary
+dengan `readelf -d <binary> | grep NEEDED`.
 
 ## Pemakaian
 
@@ -210,6 +241,28 @@ docker run --rm ghcr.io/agungdh/chiseled-runtimes/nodejs:26-ubuntu26.04 node --v
 docker run --rm ghcr.io/agungdh/chiseled-runtimes/nodejs:26-ubuntu26.04 npm --version
 ```
 
+Untuk Bun, install dependency di stage builder dengan alasan yang sama:
+
+```dockerfile
+FROM oven/bun:1 AS build
+WORKDIR /app
+COPY package.json bun.lock ./
+RUN bun install --frozen-lockfile --production
+COPY . .
+
+FROM ghcr.io/agungdh/chiseled-runtimes/bun:1-ubuntu26.04
+COPY --from=build --chown=10001:10001 /app /app
+ENV NODE_ENV=production
+CMD ["bun", "server.ts"]
+```
+
+Atau langsung dari CLI:
+
+```bash
+docker run --rm ghcr.io/agungdh/chiseled-runtimes/bun:1-ubuntu26.04 bun --version
+docker run --rm ghcr.io/agungdh/chiseled-runtimes/bun:1-ubuntu26.04 bun -e 'console.log(Bun.version)'
+```
+
 ## Tag dan versioning
 
 Setiap image punya dua jenis tag:
@@ -245,10 +298,14 @@ Setiap image punya dua jenis tag:
 | `nodejs:26-ubuntu26.04` | Node.js 26 terbaru di Ubuntu 26.04 (target spesifik, multi-arch) |
 | `nodejs:26` | Node.js 26 terbaru (lintas base, saat ini Ubuntu 26.04, multi-arch) |
 | `nodejs:latest` | target yang terdaftar di `LATEST_TARGETS` (saat ini Node.js 26, multi-arch) |
+| `bun:1-ubuntu26.04` | Bun 1 terbaru di Ubuntu 26.04 (target spesifik, multi-arch) |
+| `bun:1` | Bun 1 terbaru (lintas base, saat ini Ubuntu 26.04, multi-arch) |
+| `bun:latest` | target yang terdaftar di `LATEST_TARGETS` (saat ini Bun 1, multi-arch) |
 | `base:java-ubuntu-26.04` | Java base terbaru di Ubuntu 26.04 (multi-arch) |
 | `base:java-ubuntu-26.10` | Java base terbaru di Ubuntu 26.10 (multi-arch) |
 | `base:nodejs-ubuntu-26.04` | Node.js base terbaru di Ubuntu 26.04 (multi-arch) |
 | `base:nodejs-ubuntu-26.10` | Node.js base terbaru di Ubuntu 26.10 (multi-arch) |
+| `base:bun-ubuntu-26.04` | Bun base terbaru di Ubuntu 26.04 (multi-arch) |
 | `base:ubuntu-26.04` | common base Ubuntu 26.04 terbaru (multi-arch) |
 | `base:ubuntu-26.10` | common base Ubuntu 26.10 terbaru (multi-arch) |
 
@@ -261,20 +318,24 @@ nodejs:25-ubuntu26.10-amd64
 nodejs:25-ubuntu26.10-arm64
 nodejs:26-ubuntu26.04-amd64
 nodejs:26-ubuntu26.04-arm64
+bun:1-ubuntu26.04-amd64
+bun:1-ubuntu26.04-arm64
 base:java-ubuntu-26.04-amd64
 base:java-ubuntu-26.04-arm64
 base:nodejs-ubuntu-26.04-amd64
 base:nodejs-ubuntu-26.04-arm64
 base:nodejs-ubuntu-26.10-amd64
 base:nodejs-ubuntu-26.10-arm64
+base:bun-ubuntu-26.04-amd64
+base:bun-ubuntu-26.04-arm64
 base:ubuntu-26.04-amd64
 base:ubuntu-26.04-arm64
 base:ubuntu-26.10-amd64
 base:ubuntu-26.10-arm64
 ```
 
-Tag channel seperti `java:25`, `nodejs:26`, dan `:latest` adalah manifest list
-yang berisi kedua architecture tersebut. `os`/`architecture` di dalam manifest otomatis
+Tag channel seperti `java:25`, `nodejs:26`, `bun:1`, dan `:latest` adalah
+manifest list yang berisi kedua architecture tersebut. `os`/`architecture` di dalam manifest otomatis
 mengikuti hasil build tiap runner, jadi tidak perlu QEMU atau build lintas-arch.
 
 **2. Build tag (untuk audit/rollback)** — menunjuk satu build tertentu:
@@ -286,9 +347,13 @@ java:25-ubuntu26.04-<sha git penuh>-<YYYYMMDDHHMMSS>-arm64
 nodejs:26-ubuntu26.04-<sha git penuh>-<YYYYMMDDHHMMSS>
 nodejs:26-ubuntu26.04-<sha git penuh>-<YYYYMMDDHHMMSS>-amd64
 nodejs:26-ubuntu26.04-<sha git penuh>-<YYYYMMDDHHMMSS>-arm64
+bun:1-ubuntu26.04-<sha git penuh>-<YYYYMMDDHHMMSS>
+bun:1-ubuntu26.04-<sha git penuh>-<YYYYMMDDHHMMSS>-amd64
+bun:1-ubuntu26.04-<sha git penuh>-<YYYYMMDDHHMMSS>-arm64
 base:java-ubuntu-26.04-<sha git penuh>-<YYYYMMDDHHMMSS>
 base:nodejs-ubuntu-26.04-<sha git penuh>-<YYYYMMDDHHMMSS>
 base:nodejs-ubuntu-26.10-<sha git penuh>-<YYYYMMDDHHMMSS>
+base:bun-ubuntu-26.04-<sha git penuh>-<YYYYMMDDHHMMSS>
 base:ubuntu-26.04-<sha git penuh>-<YYYYMMDDHHMMSS>
 base:ubuntu-26.10-<sha git penuh>-<YYYYMMDDHHMMSS>
 ```
@@ -358,6 +423,9 @@ Bisa juga build target tertentu saja. Dependency base akan dibangun otomatis
 # hanya Node.js 25 (common 26.10 + Node.js base 26.10 dibangun sebagai dependency)
 ./scripts/build-local.sh nodejs/25-ubuntu26.10
 
+# hanya Bun 1 (common 26.04 + Bun base dibangun sebagai dependency)
+./scripts/build-local.sh bun/1-ubuntu26.04
+
 # hanya common base 26.10
 ./scripts/build-local.sh base/ubuntu-26.10
 
@@ -365,7 +433,7 @@ Bisa juga build target tertentu saja. Dependency base akan dibangun otomatis
 ./scripts/build-local.sh base/java-ubuntu-26.04
 
 # beberapa target sekaligus
-./scripts/build-local.sh base/java-ubuntu-26.04 java/25-ubuntu26.04 nodejs/26-ubuntu26.04
+./scripts/build-local.sh base/java-ubuntu-26.04 java/25-ubuntu26.04 nodejs/26-ubuntu26.04 bun/1-ubuntu26.04
 ```
 
 Build manual:
@@ -392,6 +460,16 @@ docker build \
   --build-arg BASE_IMAGE=ghcr.io/agungdh/chiseled-runtimes/base:nodejs-ubuntu-26.10 \
   -t ghcr.io/agungdh/chiseled-runtimes/nodejs:25-ubuntu26.10 \
   nodejs/25-ubuntu26.10
+
+docker build \
+  --build-arg COMMON_BASE_IMAGE=ghcr.io/agungdh/chiseled-runtimes/base:ubuntu-26.04 \
+  -t ghcr.io/agungdh/chiseled-runtimes/base:bun-ubuntu-26.04 \
+  base/bun-ubuntu-26.04
+
+docker build \
+  --build-arg BASE_IMAGE=ghcr.io/agungdh/chiseled-runtimes/base:bun-ubuntu-26.04 \
+  -t ghcr.io/agungdh/chiseled-runtimes/bun:1-ubuntu26.04 \
+  bun/1-ubuntu26.04
 ```
 
 ## Struktur
@@ -405,7 +483,8 @@ docker build \
 │   ├── java-ubuntu-26.04/Dockerfile    # Java base (font + zlib)
 │   ├── java-ubuntu-26.10/Dockerfile
 │   ├── nodejs-ubuntu-26.04/Dockerfile  # Node.js base LTS (env + libstdc++ + libgcc)
-│   └── nodejs-ubuntu-26.10/Dockerfile  # Node.js base non-LTS
+│   ├── nodejs-ubuntu-26.10/Dockerfile  # Node.js base non-LTS
+│   └── bun-ubuntu-26.04/Dockerfile     # Bun base (env)
 ├── java/
 │   ├── 8-ubuntu26.04/Dockerfile      # Liberica JRE 8
 │   ├── 11-ubuntu26.04/Dockerfile     # Liberica JRE 11
@@ -420,13 +499,16 @@ docker build \
 │   ├── 24-ubuntu26.04/Dockerfile     # Node.js 24 LTS
 │   ├── 25-ubuntu26.10/Dockerfile     # Node.js 25 (non-LTS)
 │   └── 26-ubuntu26.04/Dockerfile     # Node.js 26 LTS
+├── bun/
+│   └── 1-ubuntu26.04/Dockerfile      # Bun 1 (stabil)
 ├── scripts/
 │   ├── build-local.sh
 │   ├── ci-detect-targets.py          # deteksi target + ekspansi matrix per arch
 │   ├── merge-manifests.sh            # gabungkan image per-arch jadi multi-arch
 │   ├── push-image.sh                 # push banyak tag + laporkan digest
 │   └── smoke/
-│       ├── java.sh                   # smoke test per runtime
+│       ├── bun.sh                    # smoke test per runtime
+│       ├── java.sh
 │       └── nodejs.sh
 └── README.md
 ```
@@ -444,8 +526,8 @@ target, lalu mengekspansi tiap target menjadi dua build native:
 Setelah kedua build selesai, job `merge_base` / `merge_lang_base` /
 `merge_runtime` memakai `docker buildx imagetools create` untuk menggabungkan
 image per-arch menjadi satu manifest multi-arch. `os`/`architecture` di manifest diisi otomatis dari
-image masing-masing, jadi tag channel seperti `:25` dan `:latest` langsung bisa
-dipakai di amd64 maupun arm64.
+image masing-masing, jadi tag channel seperti `:25`, `:1`, dan `:latest` langsung
+bisa dipakai di amd64 maupun arm64.
 
 Target yang dibangun tetap selektif:
 
@@ -461,14 +543,16 @@ Target yang dibangun tetap selektif:
 - Ubah `nodejs/22-ubuntu26.04/**` → hanya Node.js 22 yang dibangun.
 - Ubah `nodejs/20-ubuntu26.04/**` → hanya Node.js 20 yang dibangun.
 - Ubah `nodejs/18-ubuntu26.04/**` → hanya Node.js 18 yang dibangun.
+- Ubah `bun/1-ubuntu26.04/**` → hanya Bun 1 yang dibangun.
 - Ubah `base/java-ubuntu-26.04/**` → Java base 26.04 + Java 8, 11, 17, 21, 25.
 - Ubah `base/java-ubuntu-26.10/**` → Java base 26.10 + Java 27.
 - Ubah `base/nodejs-ubuntu-26.04/**` → Node.js base 26.04 + Node.js 18, 20,
   22, 24, 26.
 - Ubah `base/nodejs-ubuntu-26.10/**` → Node.js base 26.10 + Node.js 25.
+- Ubah `base/bun-ubuntu-26.04/**` → Bun base 26.04 + Bun 1.
 - Ubah `base/ubuntu-26.04/**` → common base 26.04 + language base 26.04 +
-  semua runtime di rilis itu (Java 8, 11, 17, 21, 25 dan Node.js 18, 20, 22,
-  24, 26), untuk kedua architecture.
+  semua runtime di rilis itu (Java 8, 11, 17, 21, 25; Node.js 18, 20, 22,
+  24, 26; dan Bun 1), untuk kedua architecture.
 - Ubah `base/ubuntu-26.10/**` → common base 26.10 + Java base 26.10 + Java 27
   + Node.js base 26.10 + Node.js 25.
 - Ubah `.github/**` atau `workflow_dispatch` → semua target dibangun.
@@ -544,10 +628,26 @@ ada. Untuk upgrade:
    `NODE_VERSION`, `NODE_SHA256_AMD64`, dan `NODE_SHA256_ARM64`.
 4. Build ulang (amd64 dan arm64), lalu jalankan smoke test.
 
+### Bun
+
+Bun tidak punya jalur LTS/non-LTS terpisah; semua rilis stabilnya memakai
+Ubuntu 26.04 LTS. Versi dan checksum Bun di-pin di `bun/*/Dockerfile`
+(`BUN_VERSION`, `BUN_SHA256_AMD64`, dan `BUN_SHA256_ARM64`). Untuk upgrade:
+
+1. Ambil rilis stabil terbaru dari
+   `https://api.github.com/repos/oven-sh/bun/releases/latest` (field
+   `tag_name`, misalnya `bun-v1.4.5`).
+2. Download zip resmi untuk kedua architecture: `bun-linux-x64.zip` dan
+   `bun-linux-aarch64.zip` (Bun memakai `aarch64` untuk arm64).
+3. Ambil checksum dari `SHASUMS256.txt` pada rilis yang sama, lalu update
+   `BUN_VERSION`, `BUN_SHA256_AMD64`, dan `BUN_SHA256_ARM64`.
+4. Build ulang (amd64 dan arm64), lalu jalankan smoke test.
+
 ## Catatan ukuran
 
 Common base sekitar 5,7 MB (file bytes; sekitar 10 MB sebagai image
-uncompressed). Java base sekitar 12,2 MB dan Node.js base sekitar 8,7 MB.
+uncompressed). Java base sekitar 12,2 MB, Node.js base sekitar 8,7 MB, dan Bun
+base praktis sama dengan common base karena hanya menambahkan `/usr/bin/env`.
 Image Java sekitar 390 MB karena bundle JRE Liberica membawa `lib/modules` dan
 beberapa CDS archive (`lib/**/*.jsa`), termasuk Server dan Client VM
 masing-masing. Client VM sengaja tidak dihapus agar `java -client` tetap
@@ -564,6 +664,10 @@ sekitar 145 MB. Dari tarball resmi, yang dibuang adalah `include/`, `share/`
 disertakan supaya image bisa dipakai untuk menjalankan aplikasi dan tooling;
 file `LICENSE` Node.js dan npm tidak dihapus.
 
+Image Bun sekitar 115 MB (uncompressed) karena binary resminya sendiri sekitar
+107 MB. Zip resmi Bun hanya berisi binary `bun` tanpa header, dokumentasi, atau
+man page, jadi tidak ada file yang perlu dibuang.
+
 ## Lisensi
 
 - Kode dan konfigurasi di repo ini: lihat lisensi repository.
@@ -571,3 +675,6 @@ file `LICENSE` Node.js dan npm tidak dihapus.
   [BellSoft Liberica](https://bell-sw.com/liberica-jdk/) untuk detail.
 - Node.js: MIT. `npm` yang dibundel berlisensi Artistic-2.0. Lihat
   [Node.js license](https://github.com/nodejs/node/blob/main/LICENSE) untuk detail.
+- Bun: MIT. Binary resmi juga membawa komponen pihak ketiga (antara lain
+  JavaScriptCore). Lihat
+  [Bun license](https://github.com/oven-sh/bun/blob/main/LICENSE.md) untuk detail.

@@ -3,9 +3,9 @@
 # Minimal, chiselled Ubuntu 26.04 base shared by every runtime.
 # Only runtime-agnostic files are shipped here; there is no shell and no
 # package manager in the final image. CA certificates and timezone data are
-# intentionally left out because Java and Node.js both use their own bundled
-# stores. Runtime-specific files are added by the language bases
-# (base/java-ubuntu-* and base/nodejs-ubuntu-*).
+# intentionally left out because Java, Node.js and Bun all use their own
+# bundled stores. Runtime-specific files are added by the language bases
+# (base/java-ubuntu-*, base/nodejs-ubuntu-* and base/bun-ubuntu-*).
 FROM ubuntu:26.04 AS builder
 
 ARG TARGETARCH
