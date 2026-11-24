@@ -1,10 +1,11 @@
 # syntax=docker/dockerfile:1
 
-# Minimal, chiselled Ubuntu 26.10 base shared by all runtimes.
+# Minimal, chiselled Ubuntu 26.10 base shared by every runtime.
 # Only runtime-agnostic files are shipped here; there is no shell and no
-# package manager in the final image. Runtime-specific packages are added by
-# each runtime image (for example fonts/zlib for Java, env/libatomic/libstdc++
-# for Node.js).
+# package manager in the final image. CA certificates and timezone data are
+# intentionally left out because Java and Node.js both use their own bundled
+# stores. Runtime-specific files are added by the language bases
+# (base/java-ubuntu-* and base/nodejs-ubuntu-*).
 FROM ubuntu:26.10 AS builder
 
 ARG TARGETARCH
@@ -27,17 +28,15 @@ RUN filename="chisel_${CHISEL_VERSION}_linux_${TARGETARCH}.tar.gz" \
     && chisel version
 
 # Cut a minimal root filesystem. Slices cover only runtime-agnostic files:
-# glibc + C.UTF-8 locale, CA certificates and timezone data. Compiler runtimes
-# (libgcc, libstdc++) are added by the images that actually link against them.
+# glibc + C.UTF-8 locale and base files. Compiler runtimes, fonts, CA
+# certificates and timezone data are added by the layers that need them.
 RUN mkdir -p /rootfs \
     && chisel cut --release ubuntu-26.10 --root /rootfs \
         base-files_base \
         base-files_release-info \
         base-passwd_data \
-        ca-certificates_data \
         libc6_libs \
-        libc-bin_locale \
-        tzdata_zoneinfo
+        libc-bin_locale
 
 # Non-root runtime user (uid/gid 10001), a writable /app and /tmp, and a
 # minimal nsswitch.conf so glibc resolves hosts without warnings.

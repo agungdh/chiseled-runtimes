@@ -3,17 +3,19 @@
 
 Targets are discovered from the repository layout:
 
-    base/ubuntu-<release>/Dockerfile          -> base image
-    <runtime>/<version>-ubuntu<release>/       -> runtime image
+    base/ubuntu-<release>/Dockerfile            -> common base image
+    base/<runtime>-ubuntu-<release>/Dockerfile  -> language base image
+    <runtime>/<version>-ubuntu<release>/        -> runtime image
 
 Every target is built once per architecture on a native GitHub runner, then the
 per-architecture images are merged into one multi-arch manifest. No QEMU is
 used: amd64 jobs run on `ubuntu-26.04` and arm64 jobs on `ubuntu-26.04-arm`.
 
-A target is rebuilt when any file inside its directory changes. A runtime is
-also rebuilt when the Ubuntu base it depends on changes. Changes under
-.github/ rebuild everything, while changes elsewhere (README, scripts, ...)
-rebuild nothing.
+A target is rebuilt when any file inside its directory changes. A language base
+is also rebuilt when the common base for its Ubuntu release changes, and a
+runtime is rebuilt when either its language base or the common base changes.
+Changes under .github/ rebuild everything, while changes elsewhere (README,
+scripts, ...) rebuild nothing.
 
 Environment:
     GITHUB_EVENT_NAME   push | pull_request | workflow_dispatch | ...
@@ -31,10 +33,12 @@ Environment:
     CHANGED_FILES       optional newline-separated override, for local testing
 
 Outputs (JSON arrays, written to GITHUB_OUTPUT):
-    base_builds      per-arch base image builds
-    base_merges      multi-arch base manifests to create after the builds
-    runtime_builds   per-arch runtime image builds
-    runtime_merges   multi-arch runtime manifests to create after the builds
+    base_builds         per-arch common base image builds
+    base_merges         multi-arch common base manifests to create
+    lang_base_builds    per-arch language base image builds
+    lang_base_merges    multi-arch language base manifests to create
+    runtime_builds      per-arch runtime image builds
+    runtime_merges      multi-arch runtime manifests to create
 """
 
 from __future__ import annotations
@@ -107,7 +111,7 @@ def _split(output: str) -> list[str]:
     return [line for line in output.splitlines() if line]
 
 
-def discover_bases() -> dict[str, str]:
+def discover_common_bases() -> dict[str, str]:
     """Map Ubuntu release -> directory, e.g. {"26.04": "base/ubuntu-26.04"}."""
     bases: dict[str, str] = {}
     base_dir = ROOT / "base"
@@ -121,6 +125,25 @@ def discover_bases() -> dict[str, str]:
         version = path.name.removeprefix("ubuntu-")
         if version:
             bases[version] = path.relative_to(ROOT).as_posix()
+    return bases
+
+
+def discover_lang_bases() -> dict[tuple[str, str], str]:
+    """Map (runtime, Ubuntu release) -> directory, e.g. ("java", "26.04")."""
+    bases: dict[tuple[str, str], str] = {}
+    base_dir = ROOT / "base"
+    if not base_dir.is_dir():
+        return bases
+    for path in sorted(base_dir.iterdir()):
+        if not path.is_dir() or path.name.startswith("ubuntu-"):
+            continue
+        if "-ubuntu-" not in path.name:
+            continue
+        if not (path / "Dockerfile").is_file():
+            continue
+        runtime, version = path.name.split("-ubuntu-", 1)
+        if runtime and version:
+            bases[(runtime, version)] = path.relative_to(ROOT).as_posix()
     return bases
 
 
@@ -175,7 +198,8 @@ def main() -> int:
     stamp = os.environ.get("BUILD_STAMP", "unknown")
     latest_targets = set(os.environ.get("LATEST_TARGETS", "").split())
 
-    bases = discover_bases()
+    common_bases = discover_common_bases()
+    lang_bases = discover_lang_bases()
     runtimes = discover_runtimes()
 
     changed = changed_files()
@@ -185,27 +209,36 @@ def main() -> int:
     if not rebuild_all and any(path.startswith(".github/") for path in changed_set):
         rebuild_all = True
 
-    changed_bases = {
+    changed_common = {
         ubuntu
-        for ubuntu, context in bases.items()
+        for ubuntu, context in common_bases.items()
         if rebuild_all or any(path.startswith(context + "/") for path in changed_set)
     }
 
+    changed_lang = {
+        key
+        for key, context in lang_bases.items()
+        if rebuild_all
+        or key[1] in changed_common
+        or any(path.startswith(context + "/") for path in changed_set)
+    }
+
+    base_repository = f"{registry}/{namespace}/base"
+
     base_builds = []
     base_merges = []
-    for ubuntu in sorted(changed_bases):
+    for ubuntu in sorted(changed_common):
         tag = f"ubuntu-{ubuntu}"
         unique_tag = f"{tag}-{revision}-{stamp}"
-        repository = f"{registry}/{namespace}/base"
 
         for arch in arch_entries():
             base_builds.append(
                 {
                     "ubuntu": ubuntu,
                     "tag": tag,
-                    "context": bases[ubuntu],
-                    "repository": repository,
-                    "image": f"{repository}:{tag}-{arch['arch']}",
+                    "context": common_bases[ubuntu],
+                    "repository": base_repository,
+                    "image": f"{base_repository}:{tag}-{arch['arch']}",
                     "push_tags": [f"{tag}-{arch['arch']}", f"{unique_tag}-{arch['arch']}"],
                     "arch": arch["arch"],
                     "platform": arch["platform"],
@@ -218,9 +251,47 @@ def main() -> int:
                 "kind": "base",
                 "ubuntu": ubuntu,
                 "tag": tag,
-                "context": bases[ubuntu],
-                "repository": repository,
-                "sources": sources_for(repository, tag),
+                "context": common_bases[ubuntu],
+                "repository": base_repository,
+                "sources": sources_for(base_repository, tag),
+                "tags": [tag, unique_tag],
+            }
+        )
+
+    lang_base_builds = []
+    lang_base_merges = []
+    for runtime, ubuntu in sorted(changed_lang):
+        tag = f"{runtime}-ubuntu-{ubuntu}"
+        unique_tag = f"{tag}-{revision}-{stamp}"
+
+        for arch in arch_entries():
+            lang_base_builds.append(
+                {
+                    "runtime": runtime,
+                    "ubuntu": ubuntu,
+                    "tag": tag,
+                    "context": lang_bases[(runtime, ubuntu)],
+                    "repository": base_repository,
+                    "image": f"{base_repository}:{tag}-{arch['arch']}",
+                    "push_tags": [f"{tag}-{arch['arch']}", f"{unique_tag}-{arch['arch']}"],
+                    "arch": arch["arch"],
+                    "platform": arch["platform"],
+                    "runner": arch["runner"],
+                    "common_base_image": f"{base_repository}:ubuntu-{ubuntu}",
+                    "common_base_context": common_bases[ubuntu],
+                    "common_changed": ubuntu in changed_common,
+                }
+            )
+
+        lang_base_merges.append(
+            {
+                "kind": "lang_base",
+                "runtime": runtime,
+                "ubuntu": ubuntu,
+                "tag": tag,
+                "context": lang_bases[(runtime, ubuntu)],
+                "repository": base_repository,
+                "sources": sources_for(base_repository, tag),
                 "tags": [tag, unique_tag],
             }
         )
@@ -228,14 +299,22 @@ def main() -> int:
     runtime_builds = []
     runtime_merges = []
     for context, target in sorted(runtimes.items()):
-        if target["ubuntu"] not in bases:
+        key = (target["runtime"], target["ubuntu"])
+        if target["ubuntu"] not in common_bases:
             print(
-                f"error: {context} depends on missing base {target['ubuntu']!r}",
+                f"error: {context} depends on missing base ubuntu-{target['ubuntu']!r}",
+                file=sys.stderr,
+            )
+            return 1
+        if key not in lang_bases:
+            print(
+                f"error: {context} depends on missing language base "
+                f"{target['runtime']}-ubuntu-{target['ubuntu']!r}",
                 file=sys.stderr,
             )
             return 1
 
-        base_changed = rebuild_all or target["ubuntu"] in changed_bases
+        base_changed = key in changed_lang
         runtime_changed = rebuild_all or any(
             path.startswith(context + "/") for path in changed_set
         )
@@ -256,8 +335,11 @@ def main() -> int:
                 {
                     **target,
                     "base_changed": base_changed,
-                    "base_context": bases[target["ubuntu"]],
-                    "base_image": f"{registry}/{namespace}/base:ubuntu-{target['ubuntu']}",
+                    "base_context": lang_bases[key],
+                    "base_image": f"{base_repository}:{target['runtime']}-ubuntu-{target['ubuntu']}",
+                    "common_changed": target["ubuntu"] in changed_common,
+                    "common_base_image": f"{base_repository}:ubuntu-{target['ubuntu']}",
+                    "common_base_context": common_bases[target["ubuntu"]],
                     "repository": repository,
                     "image": f"{repository}:{tag}-{arch['arch']}",
                     "push_tags": [f"{pushed}-{arch['arch']}" for pushed in tags],
@@ -280,6 +362,11 @@ def main() -> int:
     print(f"changed files: {len(changed_set) if changed is not None else 'all'}")
     print(f"base builds:      {[e['image'] for e in base_builds]}")
     print(f"base merges:      {[e['repository'] + ':' + e['tag'] for e in base_merges]}")
+    print(f"lang base builds: {[e['image'] for e in lang_base_builds]}")
+    print(
+        "lang base merges: "
+        f"{[e['repository'] + ':' + e['tag'] for e in lang_base_merges]}"
+    )
     print(f"runtime builds:   {[e['image'] for e in runtime_builds]}")
     print(f"runtime merges:   {[e['repository'] + ':' + e['tag'] for e in runtime_merges]}")
 
@@ -288,8 +375,20 @@ def main() -> int:
         with open(output_path, "a", encoding="utf-8") as handle:
             handle.write(f"base_builds={json.dumps(base_builds, separators=(',', ':'))}\n")
             handle.write(f"base_merges={json.dumps(base_merges, separators=(',', ':'))}\n")
-            handle.write(f"runtime_builds={json.dumps(runtime_builds, separators=(',', ':'))}\n")
-            handle.write(f"runtime_merges={json.dumps(runtime_merges, separators=(',', ':'))}\n")
+            handle.write(
+                "lang_base_builds="
+                f"{json.dumps(lang_base_builds, separators=(',', ':'))}\n"
+            )
+            handle.write(
+                "lang_base_merges="
+                f"{json.dumps(lang_base_merges, separators=(',', ':'))}\n"
+            )
+            handle.write(
+                f"runtime_builds={json.dumps(runtime_builds, separators=(',', ':'))}\n"
+            )
+            handle.write(
+                f"runtime_merges={json.dumps(runtime_merges, separators=(',', ':'))}\n"
+            )
 
     return 0
 

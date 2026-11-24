@@ -33,13 +33,16 @@ env:
 jobs:
   # Works out which images actually changed and expands every target into one
   # build entry per architecture. Targets are discovered from the folder
-  # layout: base/ubuntu-<release> and <runtime>/<version>-ubuntu<release>.
+  # layout: base/ubuntu-<release>, base/<runtime>-ubuntu-<release> and
+  # <runtime>/<version>-ubuntu<release>.
   changes:
     name: Detect changed targets
     runs-on: ubuntu-26.04
     outputs:
       base_builds: ${{ steps.detect.outputs.base_builds }}
       base_merges: ${{ steps.detect.outputs.base_merges }}
+      lang_base_builds: ${{ steps.detect.outputs.lang_base_builds }}
+      lang_base_merges: ${{ steps.detect.outputs.lang_base_merges }}
       runtime_builds: ${{ steps.detect.outputs.runtime_builds }}
       runtime_merges: ${{ steps.detect.outputs.runtime_merges }}
       revision: ${{ steps.meta.outputs.revision }}
@@ -73,8 +76,8 @@ jobs:
           BUILD_STAMP: ${{ steps.meta.outputs.stamp }}
         run: python3 scripts/ci-detect-targets.py
 
-  # Base images, one native job per architecture. Only bases whose directory
-  # changed (or every base on a global change) are built.
+  # Common base images, one native job per architecture. Only bases whose
+  # directory changed (or every base on a global change) are built.
   base:
     name: Base ${{ matrix.ubuntu }} (${{ matrix.arch }})
     needs: changes
@@ -126,9 +129,9 @@ jobs:
             done <<< "${lines}"
           } >> "${GITHUB_STEP_SUMMARY:-/dev/null}"
 
-  # Merge the per-arch base images into the multi-arch tags that runtimes (and
-  # users) consume. This only references manifests in the registry, so it does
-  # not need emulation and can run on any runner.
+  # Merge the per-arch common base images into the multi-arch tags that the
+  # language bases consume. This only references manifests in the registry, so
+  # it does not need emulation and can run on any runner.
   merge_base:
     name: Merge base ${{ matrix.ubuntu }}
     needs: [changes, base]
@@ -166,12 +169,128 @@ jobs:
             done <<< "${lines}"
           } >> "${GITHUB_STEP_SUMMARY:-/dev/null}"
 
+  # Language base images (Java, Node.js, ...), one native job per architecture.
+  # They are rebuilt when their own directory or the common base changes.
+  lang_base:
+    name: ${{ matrix.runtime }} base / Ubuntu ${{ matrix.ubuntu }} (${{ matrix.arch }})
+    needs: [changes, base, merge_base]
+    if: ${{ !cancelled() && needs.changes.result == 'success' && needs.changes.outputs.lang_base_builds != '[]' && (needs.base.result == 'success' || needs.base.result == 'skipped') && (needs.merge_base.result == 'success' || needs.merge_base.result == 'skipped') }}
+    runs-on: ${{ matrix.runner }}
+    env:
+      REVISION: ${{ needs.changes.outputs.revision }}
+      CREATED: ${{ needs.changes.outputs.created }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(needs.changes.outputs.lang_base_builds) }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Log in to GHCR
+        if: github.event_name != 'pull_request'
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Ensure common base image
+        run: |
+          # On a PR nothing is pushed, so a changed common base must be built
+          # locally for this architecture. Otherwise the published multi-arch
+          # base is used (merge_base has already published it when it changed).
+          build_common() {
+            docker build \
+              --platform "${{ matrix.platform }}" \
+              --build-arg "TARGETARCH=${{ matrix.arch }}" \
+              --label "org.opencontainers.image.revision=${REVISION}" \
+              --label "org.opencontainers.image.created=${CREATED}" \
+              --tag "${{ matrix.common_base_image }}" \
+              "${{ matrix.common_base_context }}"
+          }
+
+          if [[ "${{ matrix.common_changed }}" == "true" && "${{ github.event_name }}" == "pull_request" ]]; then
+            build_common
+          elif ! docker pull --platform "${{ matrix.platform }}" "${{ matrix.common_base_image }}"; then
+            echo "::warning::Could not pull ${{ matrix.common_base_image }}, building it locally"
+            build_common
+          fi
+
+      - name: Build language base image
+        run: >-
+          docker build
+          --platform "${{ matrix.platform }}"
+          --build-arg "TARGETARCH=${{ matrix.arch }}"
+          --build-arg "COMMON_BASE_IMAGE=${{ matrix.common_base_image }}"
+          --label "org.opencontainers.image.revision=${REVISION}"
+          --label "org.opencontainers.image.created=${CREATED}"
+          --tag "${{ matrix.image }}"
+          "${{ matrix.context }}"
+
+      - name: Push language base image
+        if: github.event_name != 'pull_request'
+        run: |
+          read -r -a tags <<< "${{ join(matrix.push_tags, ' ') }}"
+          lines="$(scripts/push-image.sh "${{ matrix.image }}" "${{ matrix.repository }}" "${tags[@]}")"
+
+          {
+            echo "### ${{ matrix.runtime }} base (Ubuntu ${{ matrix.ubuntu }}, ${{ matrix.arch }})"
+            echo ""
+            echo "| Tag | Digest |"
+            echo "|---|---|"
+            while IFS=$'\t' read -r tag digest_ref; do
+              [[ -n "${tag}" ]] || continue
+              echo "| \`${tag}\` | \`${digest_ref}\` |"
+            done <<< "${lines}"
+          } >> "${GITHUB_STEP_SUMMARY:-/dev/null}"
+
+  # Merge the per-arch language base images into the multi-arch tags that the
+  # runtime images consume.
+  merge_lang_base:
+    name: Merge ${{ matrix.runtime }} base / Ubuntu ${{ matrix.ubuntu }}
+    needs: [changes, lang_base]
+    if: ${{ !cancelled() && github.event_name != 'pull_request' && needs.changes.outputs.lang_base_merges != '[]' && needs.lang_base.result == 'success' }}
+    runs-on: ubuntu-26.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(needs.changes.outputs.lang_base_merges) }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Create multi-arch manifest
+        run: |
+          read -r -a sources <<< "${{ join(matrix.sources, ' ') }}"
+          tags="${{ join(matrix.tags, ',') }}"
+          lines="$(scripts/merge-manifests.sh "${{ matrix.repository }}" "${tags}" "${sources[@]}")"
+
+          {
+            echo "### ${{ matrix.runtime }} base (Ubuntu ${{ matrix.ubuntu }}, multi-arch)"
+            echo ""
+            echo "| Tag | Digest |"
+            echo "|---|---|"
+            while IFS=$'\t' read -r tag digest_ref; do
+              [[ -n "${tag}" ]] || continue
+              echo "| \`${tag}\` | \`${digest_ref}\` |"
+            done <<< "${lines}"
+          } >> "${GITHUB_STEP_SUMMARY:-/dev/null}"
+
   # Runtime images, one native job per architecture. Runtimes are rebuilt when
-  # they changed themselves or when their Ubuntu base changed.
+  # they changed themselves, when their language base changed, or when the
+  # common base changed.
   runtime:
     name: ${{ matrix.runtime }} ${{ matrix.version }} / Ubuntu ${{ matrix.ubuntu }} (${{ matrix.arch }})
-    needs: [changes, base, merge_base]
-    if: ${{ !cancelled() && needs.changes.result == 'success' && needs.changes.outputs.runtime_builds != '[]' && (needs.base.result == 'success' || needs.base.result == 'skipped') && (needs.merge_base.result == 'success' || needs.merge_base.result == 'skipped') }}
+    needs: [changes, base, merge_base, lang_base, merge_lang_base]
+    if: ${{ !cancelled() && needs.changes.result == 'success' && needs.changes.outputs.runtime_builds != '[]' && (needs.base.result == 'success' || needs.base.result == 'skipped') && (needs.merge_base.result == 'success' || needs.merge_base.result == 'skipped') && (needs.lang_base.result == 'success' || needs.lang_base.result == 'skipped') && (needs.merge_lang_base.result == 'success' || needs.merge_lang_base.result == 'skipped') }}
     runs-on: ${{ matrix.runner }}
     env:
       REVISION: ${{ needs.changes.outputs.revision }}
@@ -192,15 +311,26 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Ensure base image
+      - name: Ensure language base image
         run: |
-          # On a PR nothing is pushed, so a changed base must be built locally
-          # for this architecture. Otherwise the published multi-arch base is
-          # used (merge_base has already published it when it changed).
-          build_base() {
+          # On a PR nothing is pushed, so a changed language base (and the
+          # common base it extends) must be built locally. Otherwise the
+          # published multi-arch language base is used.
+          build_common() {
             docker build \
               --platform "${{ matrix.platform }}" \
               --build-arg "TARGETARCH=${{ matrix.arch }}" \
+              --label "org.opencontainers.image.revision=${REVISION}" \
+              --label "org.opencontainers.image.created=${CREATED}" \
+              --tag "${{ matrix.common_base_image }}" \
+              "${{ matrix.common_base_context }}"
+          }
+
+          build_lang() {
+            docker build \
+              --platform "${{ matrix.platform }}" \
+              --build-arg "TARGETARCH=${{ matrix.arch }}" \
+              --build-arg "COMMON_BASE_IMAGE=${{ matrix.common_base_image }}" \
               --label "org.opencontainers.image.revision=${REVISION}" \
               --label "org.opencontainers.image.created=${CREATED}" \
               --tag "${{ matrix.base_image }}" \
@@ -208,10 +338,12 @@ jobs:
           }
 
           if [[ "${{ matrix.base_changed }}" == "true" && "${{ github.event_name }}" == "pull_request" ]]; then
-            build_base
+            build_common
+            build_lang
           elif ! docker pull --platform "${{ matrix.platform }}" "${{ matrix.base_image }}"; then
             echo "::warning::Could not pull ${{ matrix.base_image }}, building it locally"
-            build_base
+            build_common
+            build_lang
           fi
 
       - name: Build runtime image

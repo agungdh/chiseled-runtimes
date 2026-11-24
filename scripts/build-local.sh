@@ -1,13 +1,14 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Build chiselled base images and runtime images locally.
+# Build chiselled common bases, language bases and runtime images locally.
 #
 # Usage:
-#   ./scripts/build-local.sh                                 # build everything
-#   ./scripts/build-local.sh java/27-ubuntu26.10             # one runtime only
-#   ./scripts/build-local.sh base/ubuntu-26.10               # one base only
-#   ./scripts/build-local.sh base/ubuntu-26.10 java/27-ubuntu26.10
+#   ./scripts/build-local.sh                                  # build everything
+#   ./scripts/build-local.sh java/27-ubuntu26.10              # one runtime only
+#   ./scripts/build-local.sh base/ubuntu-26.10                # one common base only
+#   ./scripts/build-local.sh base/java-ubuntu-26.04           # one language base only
+#   ./scripts/build-local.sh base/java-ubuntu-26.04 java/25-ubuntu26.04
 #   PUSH=true ./scripts/build-local.sh java/25-ubuntu26.04
 #
 # Environment overrides:
@@ -56,36 +57,35 @@ for platform in "${platforms[@]}"; do
   [[ " ${arches[*]} " == *" ${arch} "* ]] || arches+=("${arch}")
 done
 
-BUILT_BASES=()
-BASE_MERGES=()
+BUILT_COMMON=()
+BUILT_LANG=()
+COMMON_MERGES=()
+LANG_MERGES=()
 RUNTIME_MERGES=()
 
-base_is_built() {
-  local ubuntu="$1" arch="$2" built
-  for built in "${BUILT_BASES[@]}"; do
-    [[ "${built}" == "${ubuntu}:${arch}" ]] && return 0
+add_unique() {
+  local array_name="$1" value="$2" existing
+  local -n array="${array_name}"
+  for existing in "${array[@]}"; do
+    [[ "${existing}" == "${value}" ]] && return 0
+  done
+  array+=("${value}")
+}
+
+common_is_built() {
+  local release="$1" arch="$2" built
+  for built in "${BUILT_COMMON[@]}"; do
+    [[ "${built}" == "${release}:${arch}" ]] && return 0
   done
   return 1
 }
 
-mark_base_built() {
-  BUILT_BASES+=("$1:$2")
-}
-
-add_base_merge() {
-  local ubuntu="$1" existing
-  for existing in "${BASE_MERGES[@]}"; do
-    [[ "${existing}" == "${ubuntu}" ]] && return 0
+lang_is_built() {
+  local runtime="$1" release="$2" arch="$3" built
+  for built in "${BUILT_LANG[@]}"; do
+    [[ "${built}" == "${runtime}:${release}:${arch}" ]] && return 0
   done
-  BASE_MERGES+=("${ubuntu}")
-}
-
-add_runtime_merge() {
-  local dir="$1" existing
-  for existing in "${RUNTIME_MERGES[@]}"; do
-    [[ "${existing}" == "${dir}" ]] && return 0
-  done
-  RUNTIME_MERGES+=("${dir}")
+  return 1
 }
 
 image_repo() {
@@ -120,12 +120,12 @@ merge_tags() {
   done <<< "${lines}"
 }
 
-build_base_arch() {
-  local ubuntu="$1" arch="$2"
-  local dir="base/ubuntu-${ubuntu}"
+build_common_arch() {
+  local release="$1" arch="$2"
+  local dir="base/ubuntu-${release}"
   local ref unique_tag
 
-  ref="$(image_ref base "ubuntu-${ubuntu}-${arch}")"
+  ref="$(image_ref base "ubuntu-${release}-${arch}")"
   printf '==> Building %s (%s, linux/%s)\n' "${ref}" "${dir}" "${arch}"
   docker build \
     --platform "linux/${arch}" \
@@ -134,26 +134,66 @@ build_base_arch() {
     --label "org.opencontainers.image.created=${CREATED}" \
     --tag "${ref}" \
     "${dir}"
-  mark_base_built "${ubuntu}" "${arch}"
+  BUILT_COMMON+=("${release}:${arch}")
 
   if [[ "${PUSH}" == "true" ]]; then
-    unique_tag="ubuntu-${ubuntu}-${REVISION}-${BUILD_STAMP}-${arch}"
-    push_images "${ref}" "$(image_repo base)" "ubuntu-${ubuntu}-${arch}" "${unique_tag}"
-    add_base_merge "${ubuntu}"
+    unique_tag="ubuntu-${release}-${REVISION}-${BUILD_STAMP}-${arch}"
+    push_images "${ref}" "$(image_repo base)" "ubuntu-${release}-${arch}" "${unique_tag}"
+    add_unique COMMON_MERGES "${release}"
   fi
 }
 
-build_base() {
-  local ubuntu="$1" arch
+build_common() {
+  local release="$1" arch
   for arch in "${arches[@]}"; do
-    build_base_arch "${ubuntu}" "${arch}"
+    build_common_arch "${release}" "${arch}"
   done
 }
 
-ensure_base() {
-  local ubuntu="$1" arch="$2"
-  base_is_built "${ubuntu}" "${arch}" && return 0
-  build_base_arch "${ubuntu}" "${arch}"
+ensure_common() {
+  local release="$1" arch="$2"
+  common_is_built "${release}" "${arch}" && return 0
+  build_common_arch "${release}" "${arch}"
+}
+
+build_lang_arch() {
+  local runtime="$1" release="$2" arch="$3"
+  local dir="base/${runtime}-ubuntu-${release}"
+  local common_ref ref unique_tag
+
+  ensure_common "${release}" "${arch}"
+
+  common_ref="$(image_ref base "ubuntu-${release}-${arch}")"
+  ref="$(image_ref base "${runtime}-ubuntu-${release}-${arch}")"
+  printf '==> Building %s (%s, linux/%s)\n' "${ref}" "${dir}" "${arch}"
+  docker build \
+    --platform "linux/${arch}" \
+    --build-arg "TARGETARCH=${arch}" \
+    --build-arg "COMMON_BASE_IMAGE=${common_ref}" \
+    --label "org.opencontainers.image.revision=${REVISION}" \
+    --label "org.opencontainers.image.created=${CREATED}" \
+    --tag "${ref}" \
+    "${dir}"
+  BUILT_LANG+=("${runtime}:${release}:${arch}")
+
+  if [[ "${PUSH}" == "true" ]]; then
+    unique_tag="${runtime}-ubuntu-${release}-${REVISION}-${BUILD_STAMP}-${arch}"
+    push_images "${ref}" "$(image_repo base)" "${runtime}-ubuntu-${release}-${arch}" "${unique_tag}"
+    add_unique LANG_MERGES "${runtime}:${release}"
+  fi
+}
+
+build_lang() {
+  local runtime="$1" release="$2" arch
+  for arch in "${arches[@]}"; do
+    build_lang_arch "${runtime}" "${release}" "${arch}"
+  done
+}
+
+ensure_lang() {
+  local runtime="$1" release="$2" arch="$3"
+  lang_is_built "${runtime}" "${release}" "${arch}" && return 0
+  build_lang_arch "${runtime}" "${release}" "${arch}"
 }
 
 build_runtime() {
@@ -166,7 +206,7 @@ build_runtime() {
   tag="$(basename "${dir}")"
   version="${tag%%-ubuntu*}"
   ubuntu="${tag##*-ubuntu}"
-  base_dir="base/ubuntu-${ubuntu}"
+  base_dir="base/${runtime}-ubuntu-${ubuntu}"
 
   if [[ ! -f "${base_dir}/Dockerfile" ]]; then
     printf 'error: %s depends on missing %s\n' "${dir}" "${base_dir}" >&2
@@ -176,8 +216,8 @@ build_runtime() {
   [[ " ${LATEST_TARGETS} " == *" ${dir} "* ]] && latest=true
 
   for arch in "${arches[@]}"; do
-    base_ref="$(image_ref base "ubuntu-${ubuntu}-${arch}")"
-    ensure_base "${ubuntu}" "${arch}"
+    ensure_lang "${runtime}" "${ubuntu}" "${arch}"
+    base_ref="$(image_ref base "${runtime}-ubuntu-${ubuntu}-${arch}")"
 
     ref="$(image_ref "${runtime}" "${tag}-${arch}")"
     printf '==> Building %s (%s, linux/%s)\n' "${ref}" "${dir}" "${arch}"
@@ -205,21 +245,39 @@ build_runtime() {
         push_tags+=("latest-${arch}")
       fi
       push_images "${ref}" "$(image_repo "${runtime}")" "${push_tags[@]}"
-      add_runtime_merge "${dir}"
+      add_unique RUNTIME_MERGES "${dir}"
     fi
   done
 }
 
-merge_bases() {
-  local ubuntu repository tags arch
+merge_common_bases() {
+  local release repository tags arch
   local -a sources
 
-  for ubuntu in "${BASE_MERGES[@]}"; do
+  for release in "${COMMON_MERGES[@]}"; do
     repository="$(image_repo base)"
-    tags="ubuntu-${ubuntu},ubuntu-${ubuntu}-${REVISION}-${BUILD_STAMP}"
+    tags="ubuntu-${release},ubuntu-${release}-${REVISION}-${BUILD_STAMP}"
     sources=()
     for arch in "${arches[@]}"; do
-      sources+=("${repository}:ubuntu-${ubuntu}-${arch}")
+      sources+=("${repository}:ubuntu-${release}-${arch}")
+    done
+    merge_tags "${repository}" "${tags}" "${sources[@]}"
+  done
+}
+
+merge_lang_bases() {
+  local key runtime release repository tag tags arch
+  local -a sources
+
+  for key in "${LANG_MERGES[@]}"; do
+    runtime="${key%%:*}"
+    release="${key##*:}"
+    repository="$(image_repo base)"
+    tag="${runtime}-ubuntu-${release}"
+    tags="${tag},${tag}-${REVISION}-${BUILD_STAMP}"
+    sources=()
+    for arch in "${arches[@]}"; do
+      sources+=("${repository}:${tag}-${arch}")
     done
     merge_tags "${repository}" "${tags}" "${sources[@]}"
   done
@@ -252,10 +310,19 @@ merge_runtimes() {
 
 discover_targets() {
   local dir
+
+  # Common bases: base/ubuntu-<release>
   while IFS= read -r dir; do
     printf '%s\n' "${dir}"
   done < <(find base -mindepth 1 -maxdepth 1 -type d -name 'ubuntu-*' | sort)
 
+  # Language bases: base/<runtime>-ubuntu-<release>
+  while IFS= read -r dir; do
+    printf '%s\n' "${dir}"
+  done < <(find base -mindepth 1 -maxdepth 1 -type d -name '*-ubuntu-*' \
+    ! -name 'ubuntu-*' | sort)
+
+  # Runtime images: <runtime>/<version>-ubuntu<release>
   while IFS= read -r dir; do
     [[ -f "${dir}/Dockerfile" ]] || continue
     printf '%s\n' "${dir#./}"
@@ -290,7 +357,11 @@ for target in "${targets[@]}"; do
 
   case "${target}" in
     base/ubuntu-*)
-      build_base "${target#base/ubuntu-}"
+      build_common "${target#base/ubuntu-}"
+      ;;
+    base/*-ubuntu-*)
+      rest="${target#base/}"
+      build_lang "${rest%%-ubuntu-*}" "${rest##*-ubuntu-}"
       ;;
     *-ubuntu*)
       build_runtime "${target}"
@@ -303,6 +374,7 @@ for target in "${targets[@]}"; do
 done
 
 if [[ "${PUSH}" == "true" ]]; then
-  merge_bases
+  merge_common_bases
+  merge_lang_bases
   merge_runtimes
 fi
