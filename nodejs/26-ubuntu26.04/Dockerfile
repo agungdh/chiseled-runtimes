@@ -44,7 +44,13 @@ RUN case "${TARGETARCH}" in \
     && mkdir -p /opt/nodejs \
     && tar -xJf /tmp/node.tar.xz -C /opt/nodejs --strip-components=1 \
     && rm -f /tmp/node.tar.xz \
-    && rm -rf /opt/nodejs/include /opt/nodejs/share/doc /opt/nodejs/share/man \
+    && rm -rf \
+        /opt/nodejs/CHANGELOG.md \
+        /opt/nodejs/README.md \
+        /opt/nodejs/include \
+        /opt/nodejs/lib/node_modules/npm/docs \
+        /opt/nodejs/lib/node_modules/npm/man \
+        /opt/nodejs/share \
     && /opt/nodejs/bin/node --version
 
 FROM ${BASE_IMAGE}

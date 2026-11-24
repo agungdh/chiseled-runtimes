@@ -59,7 +59,8 @@ Karakteristik image Node.js:
 
 - Multi-arch: Docker otomatis memilih `amd64` atau `arm64` sesuai host.
 - Berisi binary resmi Node.js (`node`, `npm`, `npx`, dan `corepack` bila tersedia
-  di rilis tersebut). Header dan dokumentasi sudah dibuang.
+  di rilis tersebut). Header, changelog, dokumentasi, dan man page sudah
+  dibuang; file `LICENSE` tetap disertakan.
 - `/usr/bin/env`, `libstdc++`, dan `libgcc_s` disediakan oleh language base
   Node.js (`base:nodejs-ubuntu-26.04` untuk LTS, `base:nodejs-ubuntu-26.10`
   untuk Node.js 25). `libatomic` hanya ditambahkan oleh Node.js 25 dan 26,
