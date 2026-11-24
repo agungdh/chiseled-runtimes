@@ -47,6 +47,10 @@ Karakteristik image Java:
 
 - Multi-arch: Docker otomatis memilih `amd64` atau `arm64` sesuai host.
 - Hanya berisi **JRE** (bukan JDK), tanpa JavaFX.
+- Bundle Liberica JRE tidak membawa header, man page, demo, sample, atau
+  `src.zip`. `LICENSE`, `legal/`, dan `readme.txt` dari BellSoft tetap
+  disertakan. Client VM (`lib/client`) juga sengaja dipertahankan supaya
+  `java -client` tetap kompatibel, walau default-nya Server VM.
 - Berjalan sebagai user non-root `app` (uid/gid `10001`), `WORKDIR /app`.
 - `JAVA_HOME=/opt/java/openjdk`, `PATH` sudah menunjuk ke `java`.
 - Tanpa shell, tanpa package manager (distroless-style).
@@ -545,7 +549,10 @@ ada. Untuk upgrade:
 Common base sekitar 5,7 MB (file bytes; sekitar 10 MB sebagai image
 uncompressed). Java base sekitar 12,2 MB dan Node.js base sekitar 8,7 MB.
 Image Java sekitar 390 MB karena bundle JRE Liberica membawa `lib/modules` dan
-beberapa CDS archive (`lib/**/*.jsa`).
+beberapa CDS archive (`lib/**/*.jsa`), termasuk Server dan Client VM
+masing-masing. Client VM sengaja tidak dihapus agar `java -client` tetap
+kompatibel; menghapusnya bisa menghemat sekitar 77 MB, sedangkan menghapus CDS
+Client VM saja menghemat sekitar 60 MB tanpa mematikan `-client`.
 Kalau nanti butuh jauh lebih kecil, opsinya adalah membuat runtime custom dengan
 `jlink` (misalnya `--add-modules ALL-MODULE-PATH --strip-debug --no-man-pages`)
 di stage builder.
