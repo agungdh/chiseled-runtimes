@@ -507,6 +507,7 @@ docker build \
 │   └── 1-ubuntu26.04/Dockerfile      # Bun 1 (stable)
 ├── scripts/
 │   ├── build-local.sh
+│   ├── check-updates.sh              # check pinned versions against upstream
 │   ├── ci-detect-targets.py          # detect targets + expand the per-arch matrix
 │   ├── merge-manifests.sh            # combine per-arch images into multi-arch
 │   ├── push-image.sh                 # push many tags + report digests
@@ -594,6 +595,17 @@ multi-arch channel tag, and its digest printed in the job summary. Details are
 in [Tags and versioning](#tags-and-versioning).
 
 ## Updating versions
+
+Run the check script to compare every pinned version in the Dockerfiles against
+upstream. It only reports; update the matching `ARG` values by hand when it finds
+a newer version.
+
+```bash
+./scripts/check-updates.sh
+```
+
+Exit status is `0` when everything is current and `1` when updates are
+available. Set `GITHUB_TOKEN` to avoid GitHub API rate limits.
 
 ### Java
 
