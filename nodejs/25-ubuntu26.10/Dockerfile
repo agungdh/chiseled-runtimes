@@ -26,8 +26,10 @@ ARG NODE_SHA256_ARM64
 
 SHELL ["/bin/bash", "-euxo", "pipefail", "-c"]
 
+# libatomic1 is needed in this builder stage only so the unpacked Node.js
+# binary can run `--version`. The final image gets it from the extra stage.
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends ca-certificates curl xz-utils \
+    && apt-get install -y --no-install-recommends ca-certificates curl libatomic1 xz-utils \
     && rm -rf /var/lib/apt/lists/*
 
 # Fetch, verify and unpack the official Node.js tarball.
