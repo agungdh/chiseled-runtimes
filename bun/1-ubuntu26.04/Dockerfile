@@ -4,9 +4,9 @@
 # so there is only one Ubuntu release to track. Versions and checksums are
 # pinned for reproducible builds; bump them together.
 ARG BASE_IMAGE=ghcr.io/agungdh/chiseled-runtimes/base:bun-ubuntu-26.04
-ARG BUN_VERSION=1.4.4
-ARG BUN_SHA256_AMD64=bf8ccbfb2b0b80159e0f9a6d15c55317add8077534dbc6130a3edb52fccb395c
-ARG BUN_SHA256_ARM64=baa6bb36f51d6e58561e02bbea825038a9df454f673d6d776e8bbf86f8c7850e
+ARG BUN_VERSION=1.4.5
+ARG BUN_SHA256_AMD64=94559b3b528995a49452f9f2404cec74f2efd7d06e0a000a8cd214b02c3666eb
+ARG BUN_SHA256_ARM64=18656a3bf0ea5641f5796ae4213b75255579a70a0fded2f337933785568cdf84
 
 FROM ubuntu:26.04 AS bun
 
