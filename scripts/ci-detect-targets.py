@@ -14,6 +14,8 @@ used: amd64 jobs run on `ubuntu-26.04` and arm64 jobs on `ubuntu-26.04-arm`.
 A target is rebuilt when any file inside its directory changes. A language base
 is also rebuilt when the common base for its Ubuntu release changes, and a
 runtime is rebuilt when either its language base or the common base changes.
+ASP.NET Core runtime images reuse the .NET language base (see
+LANG_BASE_ALIASES) because both need the same native dependencies.
 Changes under .github/ rebuild everything, while changes elsewhere (README,
 scripts, ...) rebuild nothing.
 
@@ -65,6 +67,11 @@ ARCHES = (
         "default_runner": "ubuntu-26.04-arm",
     },
 )
+
+# ASP.NET Core is part of the .NET platform and needs the same native
+# dependencies, so its runtime images reuse the .NET language base instead of
+# carrying an identical copy of it.
+LANG_BASE_ALIASES = {"aspnet": "dotnet"}
 
 
 def git(*args: str) -> str:
@@ -299,7 +306,8 @@ def main() -> int:
     runtime_builds = []
     runtime_merges = []
     for context, target in sorted(runtimes.items()):
-        key = (target["runtime"], target["ubuntu"])
+        base_runtime = LANG_BASE_ALIASES.get(target["runtime"], target["runtime"])
+        key = (base_runtime, target["ubuntu"])
         if target["ubuntu"] not in common_bases:
             print(
                 f"error: {context} depends on missing base ubuntu-{target['ubuntu']!r}",
@@ -309,7 +317,7 @@ def main() -> int:
         if key not in lang_bases:
             print(
                 f"error: {context} depends on missing language base "
-                f"{target['runtime']}-ubuntu-{target['ubuntu']!r}",
+                f"{base_runtime}-ubuntu-{target['ubuntu']!r}",
                 file=sys.stderr,
             )
             return 1
@@ -336,7 +344,7 @@ def main() -> int:
                     **target,
                     "base_changed": base_changed,
                     "base_context": lang_bases[key],
-                    "base_image": f"{base_repository}:{target['runtime']}-ubuntu-{target['ubuntu']}",
+                    "base_image": f"{base_repository}:{base_runtime}-ubuntu-{target['ubuntu']}",
                     "common_changed": target["ubuntu"] in changed_common,
                     "common_base_image": f"{base_repository}:ubuntu-{target['ubuntu']}",
                     "common_base_context": common_bases[target["ubuntu"]],

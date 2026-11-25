@@ -22,7 +22,8 @@ set -euo pipefail
 #   PUSH            push images after a successful build (default: false)
 #   LATEST_TARGETS  space-separated targets that also get :latest
 #                   (default: java/25-ubuntu26.04 nodejs/26-ubuntu26.04
-#                   bun/1-ubuntu26.04)
+#                   bun/1-ubuntu26.04 dotnet/11.0-ubuntu26.10
+#                   aspnet/11.0-ubuntu26.10)
 #   REVISION        git revision recorded in labels/tags (default: current HEAD)
 #
 # With PUSH=true each architecture is pushed under <tag>-<arch> and then merged
@@ -34,7 +35,7 @@ OWNER="${OWNER:-agungdh}"
 REPO="${REPO:-chiseled-runtimes}"
 PLATFORMS="${PLATFORMS:-${PLATFORM:-linux/amd64}}"
 PUSH="${PUSH:-false}"
-LATEST_TARGETS="${LATEST_TARGETS:-java/25-ubuntu26.04 nodejs/26-ubuntu26.04 bun/1-ubuntu26.04}"
+LATEST_TARGETS="${LATEST_TARGETS:-java/25-ubuntu26.04 nodejs/26-ubuntu26.04 bun/1-ubuntu26.04 dotnet/11.0-ubuntu26.10 aspnet/11.0-ubuntu26.10}"
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "${ROOT_DIR}"
@@ -199,7 +200,7 @@ ensure_lang() {
 
 build_runtime() {
   local dir="$1"
-  local runtime tag version ubuntu base_dir ref smoke
+  local runtime base_runtime tag version ubuntu base_dir ref smoke
   local arch base_ref unique_tag latest=false
   local -a push_tags
 
@@ -207,7 +208,14 @@ build_runtime() {
   tag="$(basename "${dir}")"
   version="${tag%%-ubuntu*}"
   ubuntu="${tag##*-ubuntu}"
-  base_dir="base/${runtime}-ubuntu-${ubuntu}"
+
+  # ASP.NET Core is part of the .NET platform and needs the same native
+  # dependencies, so its images reuse the .NET language base.
+  base_runtime="${runtime}"
+  case "${runtime}" in
+    aspnet) base_runtime="dotnet" ;;
+  esac
+  base_dir="base/${base_runtime}-ubuntu-${ubuntu}"
 
   if [[ ! -f "${base_dir}/Dockerfile" ]]; then
     printf 'error: %s depends on missing %s\n' "${dir}" "${base_dir}" >&2
@@ -217,8 +225,8 @@ build_runtime() {
   [[ " ${LATEST_TARGETS} " == *" ${dir} "* ]] && latest=true
 
   for arch in "${arches[@]}"; do
-    ensure_lang "${runtime}" "${ubuntu}" "${arch}"
-    base_ref="$(image_ref base "${runtime}-ubuntu-${ubuntu}-${arch}")"
+    ensure_lang "${base_runtime}" "${ubuntu}" "${arch}"
+    base_ref="$(image_ref base "${base_runtime}-ubuntu-${ubuntu}-${arch}")"
 
     ref="$(image_ref "${runtime}" "${tag}-${arch}")"
     printf '==> Building %s (%s, linux/%s)\n' "${ref}" "${dir}" "${arch}"

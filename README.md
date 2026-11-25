@@ -4,18 +4,24 @@
 on [Ubuntu](https://ubuntu.com/) + [chisel](https://github.com/canonical/chisel)
 from Canonical.
 
-Three runtimes are currently available:
+Five runtimes are currently available:
 
 - **Java** with the **[BellSoft Liberica](https://bell-sw.com/liberica-jdk/)** distribution.
 - **Node.js** with the official binaries from [nodejs.org](https://nodejs.org/): LTS
   versions on Ubuntu 26.04, plus a non-LTS version (Node.js 25) on Ubuntu 26.10.
 - **Bun** with the official binaries from [bun.sh](https://bun.sh/). Bun has no
   non-LTS track, so all of its versions use Ubuntu 26.04 LTS.
+- **.NET** with the official runtime from
+  [Microsoft](https://dotnet.microsoft.com/): .NET 11 (STS) on Ubuntu 26.10.
+- **ASP.NET Core** with the official runtime from Microsoft: ASP.NET Core 11 on
+  Ubuntu 26.10. It ships the ASP.NET Core shared framework on top of the .NET
+  runtime.
 
 Images are layered in three tiers: **common base** (`base/ubuntu-*`) →
 **language base** (`base/java-ubuntu-*`, `base/nodejs-ubuntu-*`,
-`base/bun-ubuntu-*`) → **runtime image** (`java/*`, `nodejs/*`, `bun/*`). Each
-layer only ships the files that are actually shared by the layers above it.
+`base/bun-ubuntu-*`, `base/dotnet-ubuntu-*`) → **runtime image** (`java/*`,
+`nodejs/*`, `bun/*`, `dotnet/*`, `aspnet/*`). Each layer only ships the files
+that are actually shared by the layers above it.
 
 Other runtimes (`php`, etc.) will follow using the same pattern.
 
@@ -39,11 +45,14 @@ multi-arch manifest under the same tags.
 | `ghcr.io/agungdh/chiseled-runtimes/nodejs:25-ubuntu26.10` | Node.js 25 | Ubuntu 26.10 | amd64, arm64 | non-LTS (EOL), also available as `:25` |
 | `ghcr.io/agungdh/chiseled-runtimes/nodejs:26-ubuntu26.04` | Node.js 26 | Ubuntu 26.04 | amd64, arm64 | LTS, also available as `:26` and `:latest` |
 | `ghcr.io/agungdh/chiseled-runtimes/bun:1-ubuntu26.04` | Bun 1 | Ubuntu 26.04 | amd64, arm64 | stable, also available as `:1` and `:latest` |
+| `ghcr.io/agungdh/chiseled-runtimes/dotnet:11.0-ubuntu26.10` | .NET 11 | Ubuntu 26.10 | amd64, arm64 | STS, also available as `:11.0` and `:latest` |
+| `ghcr.io/agungdh/chiseled-runtimes/aspnet:11.0-ubuntu26.10` | ASP.NET Core 11 | Ubuntu 26.10 | amd64, arm64 | ASP.NET Core runtime, also available as `:11.0` and `:latest` |
 | `ghcr.io/agungdh/chiseled-runtimes/base:java-ubuntu-26.04` | Java base | Ubuntu 26.04 | amd64, arm64 | fonts + zlib for Java 8–25 |
 | `ghcr.io/agungdh/chiseled-runtimes/base:java-ubuntu-26.10` | Java base | Ubuntu 26.10 | amd64, arm64 | fonts + zlib for Java 27 |
 | `ghcr.io/agungdh/chiseled-runtimes/base:nodejs-ubuntu-26.04` | Node.js base | Ubuntu 26.04 | amd64, arm64 | env + libstdc++ + libgcc for Node.js 18, 20, 22, 24, 26 |
 | `ghcr.io/agungdh/chiseled-runtimes/base:nodejs-ubuntu-26.10` | Node.js base | Ubuntu 26.10 | amd64, arm64 | env + libstdc++ + libgcc for Node.js 25 |
 | `ghcr.io/agungdh/chiseled-runtimes/base:bun-ubuntu-26.04` | Bun base | Ubuntu 26.04 | amd64, arm64 | env for Bun |
+| `ghcr.io/agungdh/chiseled-runtimes/base:dotnet-ubuntu-26.10` | .NET base | Ubuntu 26.10 | amd64, arm64 | ICU + OpenSSL + zlib + CA certs + tzdata for .NET and ASP.NET Core 11 |
 | `ghcr.io/agungdh/chiseled-runtimes/base:ubuntu-26.04` | - | Ubuntu 26.04 | amd64, arm64 | common base without a runtime |
 | `ghcr.io/agungdh/chiseled-runtimes/base:ubuntu-26.10` | - | Ubuntu 26.10 | amd64, arm64 | common base without a runtime |
 
@@ -104,6 +113,28 @@ Bun image characteristics:
   bundle and timezone data.
 - No default `ENTRYPOINT`/`CMD`, so it is free to use for any application.
 
+.NET and ASP.NET Core image characteristics:
+
+- Multi-arch: Docker automatically picks `amd64` or `arm64` to match the host.
+- **.NET** images contain the .NET runtime only (`Microsoft.NETCore.App`), not
+  the SDK. **ASP.NET Core** images contain both `Microsoft.NETCore.App` and
+  `Microsoft.AspNetCore.App`; the `aspnetcore-runtime` tarball is standalone.
+  Publish the application in a builder stage (`mcr.microsoft.com/dotnet/sdk:11.0`).
+- Runtime files are installed under `/opt/dotnet`; `DOTNET_ROOT=/opt/dotnet`
+  and `PATH` already points to `dotnet`.
+- `DOTNET_RUNNING_IN_CONTAINER=true` is set, and ASP.NET Core images default
+  `ASPNETCORE_HTTP_PORTS=8080` (the upstream convention).
+- Runs as the non-root user `app` (uid/gid `10001`), `WORKDIR /app`,
+  `HOME=/app`.
+- No shell, no package manager (distroless-style). Application dependencies
+  must be published in a builder stage.
+- The .NET base ships ICU (`libicu78`), OpenSSL 4, zlib, `libstdc++`,
+  `libgcc_s`, the Mozilla CA bundle, and the timezone database, so
+  globalization, TLS, and named time zones work out of the box. Canonical's
+  chisel release for Ubuntu 26.10 has no .NET 11 slices yet (only 10.0), so the
+  runtime is pinned from the official Microsoft tarballs.
+- No default `ENTRYPOINT`/`CMD`, so it is free to use for any application.
+
 Runtime dependency separation:
 
 - `base/ubuntu-*` is the **common base**: glibc + the `C.UTF-8` locale,
@@ -119,9 +150,13 @@ Runtime dependency separation:
   versions that link against it.
 - `base/bun-ubuntu-26.04` is the **Bun base**: it only adds `/usr/bin/env`; the
   glibc that Bun needs is already in the common base.
-- As a result, Java images ship no Node.js/Bun dependencies, Node.js/Bun
-  images ship no Java fonts/zlib, and no version ships a library it does not
-  use.
+- `base/dotnet-ubuntu-26.10` is the **.NET base**: adds ICU, OpenSSL 4, zlib,
+  `libstdc++`, `libgcc_s`, the Mozilla CA bundle, and the timezone database.
+  ASP.NET Core needs the exact same native dependencies, so `aspnet/*` images
+  reuse this base instead of shipping an identical copy.
+- As a result, each image ships only its own runtime dependencies: Java images
+  do not carry Node.js/Bun/.NET files, Node.js/Bun/.NET images do not carry
+  Java fonts/zlib, and no version ships a library it does not use.
 
 If an application needs system CA certificates or named timezones from native
 libraries, add them yourself in a builder stage:
@@ -138,7 +173,8 @@ COPY --from=extra /usr/share/zoneinfo /usr/share/zoneinfo
 ```
 
 Java, Node.js, and Bun themselves do not need them: all three use their built-in
-stores.
+stores. The .NET base already ships the Mozilla CA bundle and the timezone
+database, so .NET and ASP.NET Core images do not need this extra stage.
 
 ## How the base layers work
 
@@ -170,12 +206,16 @@ through an `extra` stage, not in the language base:
 | Node.js 18/20/22/24 | - | already covered by the Node.js base |
 | Node.js 25/26 | `libatomic.so.1` | only those two versions link against it |
 | Bun 1 | - | already covered by the Bun base + common base |
+| .NET 11 | - | already covered by the .NET base |
+| ASP.NET Core 11 | - | reuses the .NET base; adds only the ASP.NET Core shared framework |
 
 The `node`/`jre` builder stages also need those libraries in order to run
 `node --version` / `java -version`. That is why `libatomic1` is installed in
 the Node 25/26 builder stage; what gets copied into the final image is still
 only the `.so` file from the `extra` stage. The `bun` builder stage needs no
-additions because the Bun binary only links against glibc.
+additions because the Bun binary only links against glibc. The
+`dotnet`/`aspnet` builder stages need only `curl`; `dotnet --list-runtimes`
+runs against the unpacked tarball.
 
 Checklist for adding a version/runtime:
 
@@ -190,9 +230,9 @@ Checklist for adding a version/runtime:
    needed.
 
 Every Dockerfile accepts `--build-arg TARGETARCH=amd64|arm64` to select the
-chisel, Node.js, Bun, and Liberica binaries. CI and `scripts/build-local.sh`
-always pass it. Before adding a slice/extra, check the binary's dependencies
-with `readelf -d <binary> | grep NEEDED`.
+chisel, Node.js, Bun, Liberica, and .NET binaries. CI and
+`scripts/build-local.sh` always pass it. Before adding a slice/extra, check the
+binary's dependencies with `readelf -d <binary> | grep NEEDED`.
 
 ## Usage
 
@@ -266,6 +306,43 @@ docker run --rm ghcr.io/agungdh/chiseled-runtimes/bun:1-ubuntu26.04 bun --versio
 docker run --rm ghcr.io/agungdh/chiseled-runtimes/bun:1-ubuntu26.04 bun -e 'console.log(Bun.version)'
 ```
 
+For .NET, publish in a builder stage because the final image has no SDK or
+shell:
+
+```dockerfile
+FROM mcr.microsoft.com/dotnet/sdk:11.0 AS build
+WORKDIR /src
+COPY . .
+RUN dotnet publish -c Release -o /out
+
+FROM ghcr.io/agungdh/chiseled-runtimes/dotnet:11.0-ubuntu26.10
+COPY --from=build --chown=10001:10001 /out /app
+ENTRYPOINT ["dotnet", "/app/app.dll"]
+```
+
+For ASP.NET Core, the same pattern with the `aspnet` image:
+
+```dockerfile
+FROM mcr.microsoft.com/dotnet/sdk:11.0 AS build
+WORKDIR /src
+COPY . .
+RUN dotnet publish -c Release -o /out
+
+FROM ghcr.io/agungdh/chiseled-runtimes/aspnet:11.0-ubuntu26.10
+COPY --from=build --chown=10001:10001 /out /app
+ENTRYPOINT ["dotnet", "/app/app.dll"]
+```
+
+The ASP.NET Core image listens on port `8080` by default
+(`ASPNETCORE_HTTP_PORTS=8080`).
+
+Or directly from the CLI:
+
+```bash
+docker run --rm ghcr.io/agungdh/chiseled-runtimes/dotnet:11.0-ubuntu26.10 dotnet --info
+docker run --rm ghcr.io/agungdh/chiseled-runtimes/aspnet:11.0-ubuntu26.10 dotnet --list-runtimes
+```
+
 ## Tags and versioning
 
 Every image has two kinds of tags:
@@ -304,11 +381,18 @@ Every image has two kinds of tags:
 | `bun:1-ubuntu26.04` | latest Bun 1 on Ubuntu 26.04 (specific target, multi-arch) |
 | `bun:1` | latest Bun 1 (across bases, currently Ubuntu 26.04, multi-arch) |
 | `bun:latest` | the target listed in `LATEST_TARGETS` (currently Bun 1, multi-arch) |
+| `dotnet:11.0-ubuntu26.10` | latest .NET 11 on Ubuntu 26.10 (specific target, multi-arch) |
+| `dotnet:11.0` | latest .NET 11 (across bases, currently Ubuntu 26.10, multi-arch) |
+| `dotnet:latest` | the target listed in `LATEST_TARGETS` (currently .NET 11, multi-arch) |
+| `aspnet:11.0-ubuntu26.10` | latest ASP.NET Core 11 on Ubuntu 26.10 (specific target, multi-arch) |
+| `aspnet:11.0` | latest ASP.NET Core 11 (across bases, currently Ubuntu 26.10, multi-arch) |
+| `aspnet:latest` | the target listed in `LATEST_TARGETS` (currently ASP.NET Core 11, multi-arch) |
 | `base:java-ubuntu-26.04` | latest Java base on Ubuntu 26.04 (multi-arch) |
 | `base:java-ubuntu-26.10` | latest Java base on Ubuntu 26.10 (multi-arch) |
 | `base:nodejs-ubuntu-26.04` | latest Node.js base on Ubuntu 26.04 (multi-arch) |
 | `base:nodejs-ubuntu-26.10` | latest Node.js base on Ubuntu 26.10 (multi-arch) |
 | `base:bun-ubuntu-26.04` | latest Bun base on Ubuntu 26.04 (multi-arch) |
+| `base:dotnet-ubuntu-26.10` | latest .NET base on Ubuntu 26.10 (multi-arch) |
 | `base:ubuntu-26.04` | latest Ubuntu 26.04 common base (multi-arch) |
 | `base:ubuntu-26.10` | latest Ubuntu 26.10 common base (multi-arch) |
 
@@ -323,6 +407,10 @@ nodejs:26-ubuntu26.04-amd64
 nodejs:26-ubuntu26.04-arm64
 bun:1-ubuntu26.04-amd64
 bun:1-ubuntu26.04-arm64
+dotnet:11.0-ubuntu26.10-amd64
+dotnet:11.0-ubuntu26.10-arm64
+aspnet:11.0-ubuntu26.10-amd64
+aspnet:11.0-ubuntu26.10-arm64
 base:java-ubuntu-26.04-amd64
 base:java-ubuntu-26.04-arm64
 base:nodejs-ubuntu-26.04-amd64
@@ -331,16 +419,18 @@ base:nodejs-ubuntu-26.10-amd64
 base:nodejs-ubuntu-26.10-arm64
 base:bun-ubuntu-26.04-amd64
 base:bun-ubuntu-26.04-arm64
+base:dotnet-ubuntu-26.10-amd64
+base:dotnet-ubuntu-26.10-arm64
 base:ubuntu-26.04-amd64
 base:ubuntu-26.04-arm64
 base:ubuntu-26.10-amd64
 base:ubuntu-26.10-arm64
 ```
 
-Channel tags such as `java:25`, `nodejs:26`, `bun:1`, and `:latest` are
-manifest lists that contain both architectures. The `os`/`architecture` fields
-inside the manifest automatically follow each runner's build, so no QEMU or
-cross-arch build is needed.
+Channel tags such as `java:25`, `nodejs:26`, `bun:1`, `dotnet:11.0`,
+`aspnet:11.0`, and `:latest` are manifest lists that contain both architectures.
+The `os`/`architecture` fields inside the manifest automatically follow each
+runner's build, so no QEMU or cross-arch build is needed.
 
 **2. Build tags (for audit/rollback)** — point at one specific build:
 
@@ -354,10 +444,17 @@ nodejs:26-ubuntu26.04-<full git sha>-<YYYYMMDDHHMMSS>-arm64
 bun:1-ubuntu26.04-<full git sha>-<YYYYMMDDHHMMSS>
 bun:1-ubuntu26.04-<full git sha>-<YYYYMMDDHHMMSS>-amd64
 bun:1-ubuntu26.04-<full git sha>-<YYYYMMDDHHMMSS>-arm64
+dotnet:11.0-ubuntu26.10-<full git sha>-<YYYYMMDDHHMMSS>
+dotnet:11.0-ubuntu26.10-<full git sha>-<YYYYMMDDHHMMSS>-amd64
+dotnet:11.0-ubuntu26.10-<full git sha>-<YYYYMMDDHHMMSS>-arm64
+aspnet:11.0-ubuntu26.10-<full git sha>-<YYYYMMDDHHMMSS>
+aspnet:11.0-ubuntu26.10-<full git sha>-<YYYYMMDDHHMMSS>-amd64
+aspnet:11.0-ubuntu26.10-<full git sha>-<YYYYMMDDHHMMSS>-arm64
 base:java-ubuntu-26.04-<full git sha>-<YYYYMMDDHHMMSS>
 base:nodejs-ubuntu-26.04-<full git sha>-<YYYYMMDDHHMMSS>
 base:nodejs-ubuntu-26.10-<full git sha>-<YYYYMMDDHHMMSS>
 base:bun-ubuntu-26.04-<full git sha>-<YYYYMMDDHHMMSS>
+base:dotnet-ubuntu-26.10-<full git sha>-<YYYYMMDDHHMMSS>
 base:ubuntu-26.04-<full git sha>-<YYYYMMDDHHMMSS>
 base:ubuntu-26.10-<full git sha>-<YYYYMMDDHHMMSS>
 ```
@@ -430,6 +527,12 @@ automatically (common base → language base → runtime):
 # only Bun 1 (common 26.04 + Bun base built as dependencies)
 ./scripts/build-local.sh bun/1-ubuntu26.04
 
+# only .NET 11 (common 26.10 + .NET base 26.10 built as dependencies)
+./scripts/build-local.sh dotnet/11.0-ubuntu26.10
+
+# only ASP.NET Core 11 (reuses the .NET base 26.10)
+./scripts/build-local.sh aspnet/11.0-ubuntu26.10
+
 # only common base 26.10
 ./scripts/build-local.sh base/ubuntu-26.10
 
@@ -474,6 +577,21 @@ docker build \
   --build-arg BASE_IMAGE=ghcr.io/agungdh/chiseled-runtimes/base:bun-ubuntu-26.04 \
   -t ghcr.io/agungdh/chiseled-runtimes/bun:1-ubuntu26.04 \
   bun/1-ubuntu26.04
+
+docker build \
+  --build-arg COMMON_BASE_IMAGE=ghcr.io/agungdh/chiseled-runtimes/base:ubuntu-26.10 \
+  -t ghcr.io/agungdh/chiseled-runtimes/base:dotnet-ubuntu-26.10 \
+  base/dotnet-ubuntu-26.10
+
+docker build \
+  --build-arg BASE_IMAGE=ghcr.io/agungdh/chiseled-runtimes/base:dotnet-ubuntu-26.10 \
+  -t ghcr.io/agungdh/chiseled-runtimes/dotnet:11.0-ubuntu26.10 \
+  dotnet/11.0-ubuntu26.10
+
+docker build \
+  --build-arg BASE_IMAGE=ghcr.io/agungdh/chiseled-runtimes/base:dotnet-ubuntu-26.10 \
+  -t ghcr.io/agungdh/chiseled-runtimes/aspnet:11.0-ubuntu26.10 \
+  aspnet/11.0-ubuntu26.10
 ```
 
 ## Structure
@@ -489,7 +607,8 @@ docker build \
 │   ├── java-ubuntu-26.10/Dockerfile
 │   ├── nodejs-ubuntu-26.04/Dockerfile  # Node.js base LTS (env + libstdc++ + libgcc)
 │   ├── nodejs-ubuntu-26.10/Dockerfile  # Node.js base non-LTS
-│   └── bun-ubuntu-26.04/Dockerfile     # Bun base (env)
+│   ├── bun-ubuntu-26.04/Dockerfile     # Bun base (env)
+│   └── dotnet-ubuntu-26.10/Dockerfile  # .NET base (ICU + OpenSSL + CA + tzdata)
 ├── java/
 │   ├── 8-ubuntu26.04/Dockerfile      # Liberica JRE 8
 │   ├── 11-ubuntu26.04/Dockerfile     # Liberica JRE 11
@@ -506,6 +625,10 @@ docker build \
 │   └── 26-ubuntu26.04/Dockerfile     # Node.js 26 LTS
 ├── bun/
 │   └── 1-ubuntu26.04/Dockerfile      # Bun 1 (stable)
+├── dotnet/
+│   └── 11.0-ubuntu26.10/Dockerfile   # .NET 11 runtime
+├── aspnet/
+│   └── 11.0-ubuntu26.10/Dockerfile   # ASP.NET Core 11 runtime
 ├── scripts/
 │   ├── build-local.sh
 │   ├── check-updates.sh              # check/bump pinned versions against upstream
@@ -513,7 +636,9 @@ docker build \
 │   ├── merge-manifests.sh            # combine per-arch images into multi-arch
 │   ├── push-image.sh                 # push many tags + report digests
 │   └── smoke/
-│       ├── bun.sh                    # per-runtime smoke test
+│       ├── aspnet.sh                 # per-runtime smoke test
+│       ├── bun.sh
+│       ├── dotnet.sh
 │       ├── java.sh
 │       └── nodejs.sh
 └── README.md
@@ -550,17 +675,22 @@ Which targets get built stays selective:
 - Change `nodejs/20-ubuntu26.04/**` → only Node.js 20 is built.
 - Change `nodejs/18-ubuntu26.04/**` → only Node.js 18 is built.
 - Change `bun/1-ubuntu26.04/**` → only Bun 1 is built.
+- Change `dotnet/11.0-ubuntu26.10/**` → only .NET 11 is built.
+- Change `aspnet/11.0-ubuntu26.10/**` → only ASP.NET Core 11 is built.
 - Change `base/java-ubuntu-26.04/**` → Java base 26.04 + Java 8, 11, 17, 21, 25.
 - Change `base/java-ubuntu-26.10/**` → Java base 26.10 + Java 27.
 - Change `base/nodejs-ubuntu-26.04/**` → Node.js base 26.04 + Node.js 18, 20,
   22, 24, 26.
 - Change `base/nodejs-ubuntu-26.10/**` → Node.js base 26.10 + Node.js 25.
 - Change `base/bun-ubuntu-26.04/**` → Bun base 26.04 + Bun 1.
+- Change `base/dotnet-ubuntu-26.10/**` → .NET base 26.10 + .NET 11 + ASP.NET
+  Core 11.
 - Change `base/ubuntu-26.04/**` → common base 26.04 + language base 26.04 +
   every runtime on that release (Java 8, 11, 17, 21, 25; Node.js 18, 20, 22,
   24, 26; and Bun 1), for both architectures.
 - Change `base/ubuntu-26.10/**` → common base 26.10 + Java base 26.10 + Java 27
-  + Node.js base 26.10 + Node.js 25.
+  + Node.js base 26.10 + Node.js 25 + .NET base 26.10 + .NET 11 + ASP.NET
+  Core 11.
 - Change `.github/**` or `workflow_dispatch` → every target is built.
 - Change `README.md` / `scripts/**` → no images are built.
 
@@ -576,6 +706,12 @@ Also add `scripts/smoke/<runtime>.sh` (accepting the image and platform as
 arguments) so it takes part in the smoke test. The `<version>` tag (e.g.
 `:8.6`, `:3.14`) is created automatically; the `:latest` tag is only for
 targets listed in `LATEST_TARGETS` in the workflow.
+
+A runtime that shares another runtime's language base must be listed in
+`LANG_BASE_ALIASES` (in `scripts/ci-detect-targets.py`) and in the `aspnet`
+case in `scripts/build-local.sh`. `aspnet` uses the `dotnet` base that way,
+because ASP.NET Core needs exactly the same native dependencies as the .NET
+runtime.
 
 The actions in the workflow are deliberately pinned to the **latest major**
 (`actions/checkout@v7`, `docker/login-action@v4`) so they do not trigger
@@ -610,7 +746,8 @@ The same logic is available locally:
 ./scripts/check-updates.sh
 
 # rewrite NODE_VERSION/NODE_SHA256_*, BUN_VERSION/BUN_SHA256_*,
-# LIBERICA_VERSION/LIBERICA_SHA256_*, and CHISEL_VERSION in place
+# LIBERICA_VERSION/LIBERICA_SHA256_*, DOTNET_VERSION/DOTNET_SHA512_*,
+# ASPNET_VERSION/ASPNET_SHA512_*, and CHISEL_VERSION in place
 ./scripts/check-updates.sh --apply
 ```
 
@@ -676,18 +813,42 @@ Bun has no separate LTS/non-LTS track; all of its stable releases use Ubuntu
    `BUN_VERSION`, `BUN_SHA256_AMD64`, and `BUN_SHA256_ARM64`.
 4. Rebuild (amd64 and arm64), then run the smoke test.
 
+### .NET and ASP.NET Core
+
+The .NET version is pinned in `dotnet/*/Dockerfile`
+(`DOTNET_VERSION`, `DOTNET_SHA512_AMD64`, and `DOTNET_SHA512_ARM64`); the
+ASP.NET Core version is pinned in `aspnet/*/Dockerfile`
+(`ASPNET_VERSION`, `ASPNET_SHA512_AMD64`, and `ASPNET_SHA512_ARM64`). .NET 11 is
+an STS release (EOL 2028-11-14), which matches Ubuntu 26.10's non-LTS cycle.
+
+`check-updates.sh` reads the channel's metadata from
+`https://builds.dotnet.microsoft.com/dotnet/release-metadata/11.0/releases.json`
+(the channel is derived from the pinned major.minor) and uses `latest-runtime`
+plus the SHA-512 `hash` of the `dotnet-runtime-<version>-linux-{x64,arm64}.tar.gz`
+and `aspnetcore-runtime-<version>-linux-{x64,arm64}.tar.gz` assets. To upgrade:
+
+1. Run `./scripts/check-updates.sh --apply` (or let the daily automation open
+   the PR).
+2. Keep `DOTNET_VERSION` and `ASPNET_VERSION` in sync: the ASP.NET Core runtime
+   version follows the .NET runtime version.
+3. Rebuild (amd64 and arm64), then run the smoke tests.
+
+Canonical's chisel release for Ubuntu 26.10 currently publishes .NET slices only
+for 10.0, so these images use the official Microsoft tarballs. If 11.0 slices
+appear, the base can switch to `chisel cut` without changing the tags.
+
 ## Size notes
 
 The common base is about 5.7 MB (file bytes; roughly 10 MB as an uncompressed
-image). The Java base is about 12.2 MB, the Node.js base about 8.7 MB, and the
-Bun base is practically the same as the common base because it only adds
-`/usr/bin/env`. Java images are about 390 MB because the Liberica JRE bundle
-ships `lib/modules` and several CDS archives (`lib/**/*.jsa`), including the
-Server and Client VMs. The Client VM is deliberately not removed so that
-`java -client` stays compatible; removing it could save about 77 MB, while
-removing only the Client VM CDS archives saves about 60 MB without disabling
-`-client`. If you need something much smaller later, the option is to build a
-custom runtime with `jlink` (for example
+image). The Java base is about 12.2 MB, the Node.js base about 8.7 MB, the .NET
+base about 58 MB (mostly ICU), and the Bun base is practically the same as the
+common base because it only adds `/usr/bin/env`. Java images are about 390 MB
+because the Liberica JRE bundle ships `lib/modules` and several CDS archives
+(`lib/**/*.jsa`), including the Server and Client VMs. The Client VM is
+deliberately not removed so that `java -client` stays compatible; removing it
+could save about 77 MB, while removing only the Client VM CDS archives saves
+about 60 MB without disabling `-client`. If you need something much smaller
+later, the option is to build a custom runtime with `jlink` (for example
 `--add-modules ALL-MODULE-PATH --strip-debug --no-man-pages`) in a builder
 stage.
 
@@ -702,6 +863,14 @@ Bun images are about 115 MB (uncompressed) because the official binary alone is
 about 107 MB. The official Bun zip only contains the `bun` binary without
 headers, documentation, or man pages, so there is nothing to strip.
 
+.NET images are about 205 MB (uncompressed) and ASP.NET Core images about
+245 MB. The .NET runtime is about 85 MB and the ASP.NET Core shared framework
+adds about 27 MB; the rest is mostly ICU (~38 MB), OpenSSL, the CA bundle, and
+the timezone database. If an application does not need culture-aware
+formatting, setting `DOTNET_SYSTEM_GLOBALIZATION_INVARIANT=true` and dropping
+`libicu78_libs` from the .NET base saves about 38 MB, at the cost of
+culture-specific formatting.
+
 ## License
 
 - The code and configuration in this repository: see the repository license.
@@ -712,3 +881,6 @@ headers, documentation, or man pages, so there is nothing to strip.
 - Bun: MIT. The official binary also bundles third-party components (including
   JavaScriptCore). See the
   [Bun license](https://github.com/oven-sh/bun/blob/main/LICENSE.md) for details.
+- .NET and ASP.NET Core: MIT. See the
+  [.NET license](https://github.com/dotnet/runtime/blob/main/LICENSE.TXT) for
+  details.

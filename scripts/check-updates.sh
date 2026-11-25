@@ -21,6 +21,9 @@ set -euo pipefail
 #   Node.js  -> latest release of the same major from nodejs.org/dist/index.json
 #   Java     -> latest Liberica release for the same feature version that ships
 #               a plain JRE tarball (bell-sw/Liberica); CRaC-only builds skipped
+#   .NET     -> latest runtime of the same channel (major.minor) from
+#               builds.dotnet.microsoft.com/dotnet/release-metadata
+#   ASP.NET  -> the ASP.NET Core runtime from the same .NET channel
 #
 # Set GITHUB_TOKEN (or GH_TOKEN) to raise the GitHub API rate limit.
 
@@ -47,6 +50,9 @@ Sources:
   Node.js  -> latest release of the same major from nodejs.org/dist/index.json
   Java     -> latest Liberica release for the same feature version that ships
               a plain JRE tarball (bell-sw/Liberica); CRaC-only builds skipped
+  .NET     -> latest runtime of the same channel (major.minor) from
+              builds.dotnet.microsoft.com/dotnet/release-metadata
+  ASP.NET  -> the ASP.NET Core runtime from the same .NET channel
 
 Set GITHUB_TOKEN (or GH_TOKEN) to raise the GitHub API rate limit.
 EOF
@@ -175,6 +181,57 @@ for release in releases:
 PY
 }
 
+DOTNET_METADATA_DIR="${TMP_DIR}/dotnet"
+mkdir -p "${DOTNET_METADATA_DIR}"
+
+dotnet_releases() { # <channel> -> path to the cached releases.json
+  local channel="$1"
+  local file="${DOTNET_METADATA_DIR}/releases-${channel}.json"
+
+  if [[ ! -f "${file}" ]]; then
+    curl -fsSL \
+      "https://builds.dotnet.microsoft.com/dotnet/release-metadata/${channel}/releases.json" \
+      >"${file}"
+  fi
+
+  printf '%s\n' "${file}"
+}
+
+dotnet_latest() { # <channel>
+  python3 - "$(dotnet_releases "$1")" <<'PY'
+import json
+import sys
+
+data = json.load(open(sys.argv[1]))
+print(data.get("latest-runtime") or data["releases"][0]["release-version"])
+PY
+}
+
+dotnet_checksums() { # <channel> <version> <runtime|aspnetcore-runtime> -> "<amd64> <arm64>"
+  python3 - "$(dotnet_releases "$1")" "$2" "$3" <<'PY'
+import json
+import sys
+
+path, version, section = sys.argv[1:4]
+prefix = "dotnet-runtime-" if section == "runtime" else "aspnetcore-runtime-"
+data = json.load(open(path))
+for release in data["releases"]:
+    if release["release-version"] != version:
+        continue
+    found = {}
+    for entry in release[section]["files"]:
+        name = entry["name"]
+        if not name.startswith(prefix) or "-composite" in name:
+            continue
+        if name.endswith("-linux-x64.tar.gz"):
+            found["amd64"] = entry["hash"]
+        elif name.endswith("-linux-arm64.tar.gz"):
+            found["arm64"] = entry["hash"]
+    print(found.get("amd64", ""), found.get("arm64", ""))
+    break
+PY
+}
+
 node_checksums() { # <version> -> "<amd64> <arm64>"
   local version="$1"
   local file="${TMP_DIR}/node-${version}-SHASUMS256.txt"
@@ -294,6 +351,7 @@ for file in "${dockerfiles[@]}"; do
   cur=""
   latest=""
   tag=""
+  channel=""
 
   if cur="$(get_arg "${file}" CHISEL_VERSION)"; [ -n "${cur}" ]; then
     comp="chisel"
@@ -308,6 +366,14 @@ for file in "${dockerfiles[@]}"; do
   elif cur="$(get_arg "${file}" LIBERICA_VERSION)"; [ -n "${cur}" ]; then
     comp="java"
     latest="$(liberica_latest "${cur%%[!0-9]*}")"
+  elif cur="$(get_arg "${file}" DOTNET_VERSION)"; [ -n "${cur}" ]; then
+    comp="dotnet"
+    channel="${cur%.*}"
+    latest="$(dotnet_latest "${channel}")"
+  elif cur="$(get_arg "${file}" ASPNET_VERSION)"; [ -n "${cur}" ]; then
+    comp="aspnet"
+    channel="${cur%.*}"
+    latest="$(dotnet_latest "${channel}")"
   else
     continue
   fi
@@ -350,6 +416,20 @@ for file in "${dockerfiles[@]}"; do
       set_arg "${file}" LIBERICA_VERSION "${latest}"
       set_arg "${file}" LIBERICA_SHA256_AMD64 "${sha_amd64}"
       set_arg "${file}" LIBERICA_SHA256_ARM64 "${sha_arm64}"
+      ;;
+    dotnet)
+      read -r sha_amd64 sha_arm64 <<<"$(dotnet_checksums "${channel}" "${latest}" runtime)"
+      need "the .NET ${latest} checksums" "${sha_amd64}${sha_arm64}"
+      set_arg "${file}" DOTNET_VERSION "${latest}"
+      set_arg "${file}" DOTNET_SHA512_AMD64 "${sha_amd64}"
+      set_arg "${file}" DOTNET_SHA512_ARM64 "${sha_arm64}"
+      ;;
+    aspnet)
+      read -r sha_amd64 sha_arm64 <<<"$(dotnet_checksums "${channel}" "${latest}" aspnetcore-runtime)"
+      need "the ASP.NET Core ${latest} checksums" "${sha_amd64}${sha_arm64}"
+      set_arg "${file}" ASPNET_VERSION "${latest}"
+      set_arg "${file}" ASPNET_SHA512_AMD64 "${sha_amd64}"
+      set_arg "${file}" ASPNET_SHA512_ARM64 "${sha_arm64}"
       ;;
   esac
 done
