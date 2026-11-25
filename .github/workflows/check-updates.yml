@@ -1,0 +1,78 @@
+name: check-updates
+
+on:
+  schedule:
+    # Daily at 03:23 UTC: an off-peak hour and an off-minute so the run does
+    # not compete with the jobs GitHub schedules on the hour.
+    - cron: "23 3 * * *"
+  workflow_dispatch:
+
+concurrency:
+  group: check-updates
+  cancel-in-progress: true
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  updates:
+    name: Check upstream versions
+    runs-on: ubuntu-26.04
+    steps:
+      # UPDATE_TOKEN is optional: pushes made with the default GITHUB_TOKEN do
+      # not trigger other workflows, so build.yml will not run on the PR unless
+      # a PAT with repo write access is stored in that secret.
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          token: ${{ secrets.UPDATE_TOKEN || secrets.GITHUB_TOKEN }}
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.14"
+
+      - name: Apply upstream updates
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -o pipefail
+          ./scripts/check-updates.sh --apply | tee "${RUNNER_TEMP}/updates.txt"
+
+      - name: Open or update pull request
+        env:
+          GH_TOKEN: ${{ secrets.UPDATE_TOKEN || secrets.GITHUB_TOKEN }}
+        run: |
+          if git diff --quiet; then
+            echo "All pinned versions are up to date."
+            exit 0
+          fi
+
+          branch="automation/version-updates"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git checkout -B "${branch}"
+          git commit -am "chore: bump pinned runtime versions"
+          git push --force origin "${branch}"
+
+          if gh pr view "${branch}" --json state --jq '.state' 2>/dev/null | grep -qx OPEN; then
+            echo "Updated the existing pull request on ${branch}."
+            exit 0
+          fi
+
+          {
+            echo "The scheduled version check found newer upstream releases and"
+            echo "applied them together with the pinned checksums."
+            echo ""
+            echo '```'
+            cat "${RUNNER_TEMP}/updates.txt"
+            echo '```'
+          } > "${RUNNER_TEMP}/pr-body.md"
+
+          gh pr create \
+            --base main \
+            --head "${branch}" \
+            --title "chore: bump pinned runtime versions" \
+            --body-file "${RUNNER_TEMP}/pr-body.md"

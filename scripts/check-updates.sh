@@ -2,15 +2,17 @@
 set -euo pipefail
 
 # Check the pinned runtime versions in every Dockerfile against upstream.
-# This script only reports; it never modifies any file.
+# By default this script only reports; with --apply it also rewrites the
+# version and checksum ARGs in place.
 #
 # Usage:
 #   ./scripts/check-updates.sh
+#   ./scripts/check-updates.sh --apply
 #   ./scripts/check-updates.sh --help
 #
 # Exit status:
-#   0  all pinned versions are up to date
-#   1  one or more updates are available
+#   0  all pinned versions are up to date (or the updates were applied)
+#   1  updates are available (check mode only)
 #   2  usage error
 #
 # Sources:
@@ -23,24 +25,53 @@ set -euo pipefail
 # Set GITHUB_TOKEN (or GH_TOKEN) to raise the GitHub API rate limit.
 
 usage() {
-  sed -n '4,23p' "$0" | sed -E 's/^# ?//'
+  cat <<'EOF'
+Check the pinned runtime versions in every Dockerfile against upstream.
+
+By default this script only reports; with --apply it also rewrites the
+version and checksum ARGs in place.
+
+Usage:
+  ./scripts/check-updates.sh
+  ./scripts/check-updates.sh --apply
+  ./scripts/check-updates.sh --help
+
+Exit status:
+  0  all pinned versions are up to date (or the updates were applied)
+  1  updates are available (check mode only)
+  2  usage error
+
+Sources:
+  chisel   -> latest stable release on GitHub (canonical/chisel)
+  Bun      -> latest stable Bun <major> release on GitHub (oven-sh/bun)
+  Node.js  -> latest release of the same major from nodejs.org/dist/index.json
+  Java     -> latest Liberica release for the same feature version that ships
+              a plain JRE tarball (bell-sw/Liberica); CRaC-only builds skipped
+
+Set GITHUB_TOKEN (or GH_TOKEN) to raise the GitHub API rate limit.
+EOF
 }
 
-ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-cd "${ROOT_DIR}"
+APPLY=false
 
 case "${1:-}" in
   "") ;;
+  --apply)
+    APPLY=true
+    ;;
   -h | --help)
     usage
     exit 0
     ;;
   *)
-    printf 'error: unknown argument %s (this script only checks; no options to apply)\n' "${1}" >&2
+    printf 'error: unknown argument %s (supported: --apply)\n' "${1}" >&2
     usage >&2
     exit 2
     ;;
 esac
+
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "${ROOT_DIR}"
 
 command -v curl >/dev/null 2>&1 || { printf 'error: curl is required\n' >&2; exit 1; }
 command -v python3 >/dev/null 2>&1 || { printf 'error: python3 is required\n' >&2; exit 1; }
@@ -144,8 +175,104 @@ for release in releases:
 PY
 }
 
+node_checksums() { # <version> -> "<amd64> <arm64>"
+  local version="$1"
+  local file="${TMP_DIR}/node-${version}-SHASUMS256.txt"
+  curl -fsSL "https://nodejs.org/dist/v${version}/SHASUMS256.txt" >"${file}"
+  python3 - "${file}" "${version}" <<'PY'
+import sys
+
+path, version = sys.argv[1:3]
+wanted = {
+    f"node-v{version}-linux-x64.tar.xz": "amd64",
+    f"node-v{version}-linux-arm64.tar.xz": "arm64",
+}
+found = {}
+for line in open(path):
+    parts = line.split()
+    if len(parts) == 2 and parts[1] in wanted:
+        found[wanted[parts[1]]] = parts[0]
+print(found.get("amd64", ""), found.get("arm64", ""))
+PY
+}
+
+bun_checksums() { # <tag> -> "<amd64> <arm64>"
+  local tag="$1"
+  local file="${TMP_DIR}/${tag}-SHASUMS256.txt"
+  curl -fsSL "https://github.com/oven-sh/bun/releases/download/${tag}/SHASUMS256.txt" >"${file}"
+  python3 - "${file}" <<'PY'
+import sys
+
+wanted = {"bun-linux-x64.zip": "amd64", "bun-linux-aarch64.zip": "arm64"}
+found = {}
+for line in open(sys.argv[1]):
+    parts = line.split()
+    if len(parts) == 2 and parts[1] in wanted:
+        found[wanted[parts[1]]] = parts[0]
+print(found.get("amd64", ""), found.get("arm64", ""))
+PY
+}
+
+liberica_checksums() { # <tag> -> "<amd64> <arm64>"
+  local tag="$1"
+  local checksums amd64 arm64
+
+  checksums="$(python3 - "${TMP_DIR}/liberica.json" "${tag}" <<'PY'
+import json
+import sys
+
+releases = json.load(open(sys.argv[1]))
+tag = sys.argv[2]
+assets = {}
+for release in releases:
+    if release.get("tag_name") == tag:
+        assets = {asset["name"]: asset for asset in release.get("assets", [])}
+        break
+
+out = []
+for arch in ("amd64", "aarch64"):
+    asset = assets.get(f"bellsoft-jre{tag}-linux-{arch}.tar.gz") or {}
+    digest = asset.get("digest") or ""
+    out.append(digest[len("sha256:"):] if digest.startswith("sha256:") else "")
+print(" ".join(out))
+PY
+)"
+
+  amd64="${checksums%% *}"
+  arm64="${checksums##* }"
+
+  # Older releases may not expose a digest in the API; hash the tarball instead.
+  if [[ -z "${amd64}" ]]; then
+    amd64="$(curl -fsSL "https://github.com/bell-sw/Liberica/releases/download/${tag}/bellsoft-jre${tag}-linux-amd64.tar.gz" | sha256sum | cut -d' ' -f1)"
+  fi
+  if [[ -z "${arm64}" ]]; then
+    arm64="$(curl -fsSL "https://github.com/bell-sw/Liberica/releases/download/${tag}/bellsoft-jre${tag}-linux-aarch64.tar.gz" | sha256sum | cut -d' ' -f1)"
+  fi
+
+  printf '%s %s\n' "${amd64}" "${arm64}"
+}
+
 get_arg() { # <file> <name>
   sed -n "s/^ARG ${2}=//p" "$1" | head -n 1
+}
+
+set_arg() { # <file> <name> <value>
+  python3 - "$1" "$2" "$3" <<'PY'
+import re
+import sys
+
+path, name, value = sys.argv[1:4]
+with open(path) as handle:
+    text = handle.read()
+
+pattern = re.compile(rf"^ARG {re.escape(name)}=.*$", re.MULTILINE)
+updated, count = pattern.subn(f"ARG {name}={value}", text)
+if count != 1:
+    sys.exit(f"error: expected exactly one ARG {name}= line in {path}, found {count}")
+
+with open(path, "w") as handle:
+    handle.write(updated)
+PY
 }
 
 need() { # <description> <value>
@@ -166,14 +293,15 @@ for file in "${dockerfiles[@]}"; do
   comp=""
   cur=""
   latest=""
+  tag=""
 
   if cur="$(get_arg "${file}" CHISEL_VERSION)"; [ -n "${cur}" ]; then
     comp="chisel"
     latest="${CHISEL_LATEST}"
   elif cur="$(get_arg "${file}" BUN_VERSION)"; [ -n "${cur}" ]; then
     comp="bun"
-    latest="$(bun_latest "${cur%%.*}")"
-    latest="${latest#bun-v}"
+    tag="$(bun_latest "${cur%%.*}")"
+    latest="${tag#bun-v}"
   elif cur="$(get_arg "${file}" NODE_VERSION)"; [ -n "${cur}" ]; then
     comp="nodejs"
     latest="$(node_latest "${cur%%.*}")"
@@ -188,15 +316,52 @@ for file in "${dockerfiles[@]}"; do
 
   if [[ "${latest}" == "${cur}" ]]; then
     printf '%-7s %-44s %-9s %-16s %-16s\n' "ok" "${rel}" "${comp}" "${cur}" "${latest}"
-  else
-    updates=$((updates + 1))
-    printf '%-7s %-44s %-9s %-16s %-16s\n' "update" "${rel}" "${comp}" "${cur}" "${latest}"
+    continue
   fi
+
+  updates=$((updates + 1))
+  printf '%-7s %-44s %-9s %-16s %-16s\n' "update" "${rel}" "${comp}" "${cur}" "${latest}"
+
+  if [[ "${APPLY}" != true ]]; then
+    continue
+  fi
+
+  case "${comp}" in
+    chisel)
+      set_arg "${file}" CHISEL_VERSION "${latest}"
+      ;;
+    nodejs)
+      read -r sha_amd64 sha_arm64 <<<"$(node_checksums "${latest}")"
+      need "the Node.js ${latest} checksums" "${sha_amd64}${sha_arm64}"
+      set_arg "${file}" NODE_VERSION "${latest}"
+      set_arg "${file}" NODE_SHA256_AMD64 "${sha_amd64}"
+      set_arg "${file}" NODE_SHA256_ARM64 "${sha_arm64}"
+      ;;
+    bun)
+      read -r sha_amd64 sha_arm64 <<<"$(bun_checksums "${tag}")"
+      need "the Bun ${latest} checksums" "${sha_amd64}${sha_arm64}"
+      set_arg "${file}" BUN_VERSION "${latest}"
+      set_arg "${file}" BUN_SHA256_AMD64 "${sha_amd64}"
+      set_arg "${file}" BUN_SHA256_ARM64 "${sha_arm64}"
+      ;;
+    java)
+      read -r sha_amd64 sha_arm64 <<<"$(liberica_checksums "${latest}")"
+      need "the Liberica ${latest} checksums" "${sha_amd64}${sha_arm64}"
+      set_arg "${file}" LIBERICA_VERSION "${latest}"
+      set_arg "${file}" LIBERICA_SHA256_AMD64 "${sha_amd64}"
+      set_arg "${file}" LIBERICA_SHA256_ARM64 "${sha_arm64}"
+      ;;
+  esac
 done
 
 printf '\n'
 if ((updates == 0)); then
   printf 'All pinned versions are up to date.\n'
+  exit 0
+fi
+
+if [[ "${APPLY}" == true ]]; then
+  printf '%d update(s) applied.\n' "${updates}"
   exit 0
 fi
 

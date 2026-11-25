@@ -481,6 +481,7 @@ docker build \
 ```
 .
 ├── .github/workflows/build.yml       # CI: detect, build per-arch, merge, push
+├── .github/workflows/check-updates.yml  # cron: bump pinned versions + open PR
 ├── base/
 │   ├── ubuntu-26.04/Dockerfile         # common base (chisel -> scratch)
 │   ├── ubuntu-26.10/Dockerfile
@@ -507,7 +508,7 @@ docker build \
 │   └── 1-ubuntu26.04/Dockerfile      # Bun 1 (stable)
 ├── scripts/
 │   ├── build-local.sh
-│   ├── check-updates.sh              # check pinned versions against upstream
+│   ├── check-updates.sh              # check/bump pinned versions against upstream
 │   ├── ci-detect-targets.py          # detect targets + expand the per-arch matrix
 │   ├── merge-manifests.sh            # combine per-arch images into multi-arch
 │   ├── push-image.sh                 # push many tags + report digests
@@ -596,16 +597,31 @@ in [Tags and versioning](#tags-and-versioning).
 
 ## Updating versions
 
-Run the check script to compare every pinned version in the Dockerfiles against
-upstream. It only reports; update the matching `ARG` values by hand when it finds
-a newer version.
+`.github/workflows/check-updates.yml` runs daily at 03:23 UTC (and can be
+started manually with `workflow_dispatch`). It compares every pinned version in
+the Dockerfiles against upstream, applies the newer version together with its
+checksums, and opens a pull request from the `automation/version-updates`
+branch. If a pull request is already open, that branch is updated instead.
+
+The same logic is available locally:
 
 ```bash
+# report only (exit 1 when updates are available)
 ./scripts/check-updates.sh
+
+# rewrite NODE_VERSION/NODE_SHA256_*, BUN_VERSION/BUN_SHA256_*,
+# LIBERICA_VERSION/LIBERICA_SHA256_*, and CHISEL_VERSION in place
+./scripts/check-updates.sh --apply
 ```
 
-Exit status is `0` when everything is current and `1` when updates are
-available. Set `GITHUB_TOKEN` to avoid GitHub API rate limits.
+Exit status is `0` when everything is current (or when `--apply` finished) and
+`1` when updates are available in check mode. Set `GITHUB_TOKEN` to avoid GitHub
+API rate limits.
+
+The PR is created with the default `GITHUB_TOKEN`, and GitHub does not start
+other workflows for pushes made with that token, so `build.yml` does not run on
+the PR automatically. Store a personal access token with repository write access
+in the `UPDATE_TOKEN` secret if the PR should be built by CI on its own.
 
 ### Java
 
