@@ -3,9 +3,9 @@
 # Liberica JRE 8 (JRE only, without JavaFX) on the chiselled Ubuntu 26.04 Java base.
 # Versions and checksums are pinned for reproducible builds; bump them together.
 ARG BASE_IMAGE=ghcr.io/agungdh/chiseled-runtimes/base:java-ubuntu-26.04
-ARG LIBERICA_VERSION=8u514+5
-ARG LIBERICA_SHA256_AMD64=3b4a7e6f61eb888c6de85592f1e14e27ba5d016cec7394afc9f94715f1c6f09e
-ARG LIBERICA_SHA256_ARM64=016169611824d535db4790e250ceab7de74daf0adda6fed0e67fc02f94658246
+ARG LIBERICA_VERSION=8u513+9
+ARG LIBERICA_SHA256_AMD64=f188847b0ef508755df0106535613d176165c64d1ca4530e83d5a5a20a7a890c
+ARG LIBERICA_SHA256_ARM64=08a756480e2a6f9353cf6fbc06119fba137264fe8c756ab5b3139c5b09906a7d
 
 # Java 8 is the only Java version here that links against libgcc_s. The Java
 # base leaves it out so Java 11+ stay free of it.
