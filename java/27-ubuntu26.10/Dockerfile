@@ -3,9 +3,9 @@
 # Liberica JRE 27 (JRE only, without JavaFX) on the chiselled Ubuntu 26.10 Java base.
 # Versions and checksums are pinned for reproducible builds; bump them together.
 ARG BASE_IMAGE=ghcr.io/agungdh/chiseled-runtimes/base:java-ubuntu-26.10
-ARG LIBERICA_VERSION=27.0.1.0.3+5
-ARG LIBERICA_SHA256_AMD64=a98437bec0d3ca7c0e6e1358af8e6c713e5f69111ddf5a2a271698ea5097405c
-ARG LIBERICA_SHA256_ARM64=262013f549d1553dfe22f9538ee3d135eb75a2d43a2ac7fa653e292ce31e4dec
+ARG LIBERICA_VERSION=27.0.1.1+5
+ARG LIBERICA_SHA256_AMD64=62dcba066355ff862acfb20eef659491874347d7dddd80e00304a869e9c9b176
+ARG LIBERICA_SHA256_ARM64=00c341066ce09e94bc630d6c85020a56da9d26cb25d45748cbcb1143d322a052
 
 FROM ubuntu:26.10 AS jre
 
